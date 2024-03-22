@@ -57,6 +57,8 @@ fn process_files_in_dir(dir: &str) -> std::io::Result<()> {
                 if header[3] != 0 {
                     header_starting += header[3];
                     file.seek(SeekFrom::Start(header_starting as u64))?;
+                } else {
+                    header_starting = file.seek(SeekFrom::Current(0))? as u32;
                 }
             }
             println!("");
