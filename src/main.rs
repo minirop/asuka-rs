@@ -1,4 +1,5 @@
 #![allow(unused)]
+use std::io::Write;
 use byteorder::BigEndian;
 use clap_derive::ValueEnum;
 use std::io::SeekFrom;
@@ -21,6 +22,14 @@ struct Args {
     /// The number of int to print for each header
     #[arg(short, long, default_value_t = 8)]
     max: u32,
+
+    /// skip size check when children don't fit
+    #[arg(short, long, default_value_t = false)]
+    skip: bool,
+
+    /// skip size check when children don't fit
+    #[arg(short, long)]
+    extract: Option<String>,
 }
 
 fn main() -> std::io::Result<()> {
@@ -39,12 +48,18 @@ fn main() -> std::io::Result<()> {
 
     let mut proc = Processor {
         max: args.max,
+        skip: args.skip,
+        extract: args.extract.clone(),
+        root: args.directory.clone(),
     };
     proc.process_files_in_dir(&args.directory)
 }
 
 struct Processor {
     max: u32,
+    skip: bool,
+    extract: Option<String>,
+    root: String,
 }
 
 impl Processor {
@@ -61,45 +76,75 @@ impl Processor {
             } else if fpath.path().to_str().unwrap().ends_with(".cat") {
                 let filename = fpath.path().to_str().unwrap().to_string();
                 let mut file = File::open(&filename)?;
-                println!("======================= {filename} =======================");
 
-                self.analyse(&mut file, 0, 0)?;
+                let relative_filename = if filename.starts_with(&self.root) {
+                    let start_pos = self.root.len();
+                    &filename[start_pos..]
+                } else {
+                    &filename
+                };
+                println!("======================= {relative_filename} =======================");
+
+                self.analyse(&mut file, &format!("{relative_filename}_out"), 0, 0)?;
             }
         }
 
         Ok(())
     }
 
-    fn analyse(&self, file: &mut File, offset: u32, depth: u32) -> std::io::Result<()> {
+    fn analyse(&self, file: &mut File, output_file: &str, offset: u32, depth: u32) -> std::io::Result<()> {
         let header = self.read_header(file)?;
-        let to_show = std::cmp::min(header[3] / 4, self.max) as usize;
+        let to_show = std::cmp::min(header.len(), self.max as usize);
         self.print(depth); println!("{:?}", &header[0..to_show]);
-        let previous_header_size = header[3] + offset;
-        let header = self.read_header(file)?;
-        let to_show = std::cmp::min(header[3] / 4, self.max) as usize;
+        let previous_header_size = header.len() * 4;
+        let previous_header_size_and_offset = previous_header_size as u32 + offset;
+
+        let mut header = self.read_header(file)?;
+        let to_show = std::cmp::min(header.len(), self.max as usize);
         self.print(depth); println!("{:?}", &header[0..to_show]);
 
         let child_count = header[1];
-        if child_count * 8 + 5 <= header.len() as u32 {
-            for child in 0..child_count {
-                let offset = header[(child + 5) as usize];
-                let size = header[(child + 5 + child_count) as usize];
-                self.print(depth); println!("{child}: from {:#X} to {:#X}", offset + previous_header_size, offset + size + previous_header_size);
+        if child_count > 0 {
+            let expected_size = (child_count * 2 + 5) as usize;
 
-                file.seek(SeekFrom::Start((offset + previous_header_size) as u64))?;
+            if header.len() < expected_size {
+                self.print(depth + 1); println!("{child_count} children but size is only {}.", header.len() * 4);
+
+                let expected_size = (child_count * 2 + 5) as usize;
+                while header.len() < expected_size {
+                    header.push(file.read_u32::<LittleEndian>()?);
+                }
+            }
+
+            for child in 0..child_count {
+                let offset = header[(child + 5) as usize] + previous_header_size_and_offset;
+                let size = header[(child + 5 + child_count) as usize];
+                self.print(depth + 1); println!("{child}: from {:#X} to {:#X}", offset, offset + size);
+                
+                file.seek(SeekFrom::Start((offset) as u64))?;
                 let mut magic = [0u8; 4];
                 file.read(&mut magic)?;
-                //file.read_u32::<BigEndian>()?;
+
                 match magic {
                     [1, 0, 0, 0] => {
                         file.seek(SeekFrom::Current(-4))?;
                         let cur_pos = file.seek(SeekFrom::Current(0))? as u32;
-                        self.analyse(file, cur_pos, depth + 1)?;
+                        self.analyse(file, output_file, cur_pos, depth + 1)?;
                     },
-                    [0x74, 0x6D, 0x6F, 0x31] => { self.print(depth + 1); println!("tmo1"); },
-                    [0x44, 0x44, 0x76, 0x20] => { self.print(depth + 1); println!("dds1"); },
+                    [0x74, 0x6D, 0x6F, 0x31] => {
+                        self.print(depth + 2); println!("tmo1");
+                        self.extract_file(file, output_file, offset, size);
+                    },
+                    [0x74, 0x6D, 0x64, 0x30] => {
+                        self.print(depth + 2); println!("tmd0");
+                        self.extract_file(file, output_file, offset, size);
+                    },
+                    [0x44, 0x44, 0x76, 0x20] => {
+                        self.print(depth + 2); println!("dds1");
+                        self.extract_file(file, output_file, offset, size);
+                    },
                     _ => {
-                        self.print(depth + 1);
+                        self.print(depth + 2);
                         let ascii = magic.into_iter().all(|x| x.is_ascii_graphic());
                         let maybe_str = String::from_utf8(magic.to_vec());
                         let magic = if ascii && maybe_str.is_ok() {
@@ -108,25 +153,28 @@ impl Processor {
                             format!("{:?}", magic)
                         };
                         println!("unknown: {}", magic);
+                        self.extract_file(file, output_file, offset, size);
                     },
                 };
             }
-        } else {
-            self.print(depth + 1); println!("{child_count} children but size is only {}.", header.len());
-            let _ = file.read_u32::<LittleEndian>()?;
-            let mut childrens = vec![];
-            for i in 0..child_count {
-                childrens.push(file.read_u32::<LittleEndian>()?);
-            }
-            for i in 0..child_count {
-                childrens.push(file.read_u32::<LittleEndian>()?);
-            }
+        }
 
-            for i in 0..child_count {
-                let start = childrens[i as usize] + previous_header_size;
-                let size = childrens[(i + child_count) as usize];
-                self.print(depth + 2); println!("child {i}: from {:#X} to {:#X}", start, start + size);
-            }
+        Ok(())
+    }
+
+    fn extract_file(&self, file: &mut File, output_file: &str, start: u32, size: u32) -> std::io::Result<()> {
+        if let Some(output_dir) = &self.extract {
+            let save = file.seek(SeekFrom::Current(0))?;
+            file.seek(SeekFrom::Start(start as u64))?;
+            let mut buffer = vec![0u8; size as usize];
+            file.read(&mut buffer)?;
+
+            std::fs::create_dir_all(format!("{output_dir}/{output_file}"))?;
+
+            let mut child_file = File::create(format!("{output_dir}/{output_file}/{:#X}.bin", start))?;
+            child_file.write(&buffer);
+
+            file.seek(SeekFrom::Start(save))?;
         }
 
         Ok(())
@@ -143,10 +191,16 @@ impl Processor {
             header.push(file.read_u32::<LittleEndian>()?);
         }
 
-        let to_read = std::cmp::min(header[3] / 4, self.max);
         for i in 4..(header[3] / 4) {
-            let int = file.read_u32::<LittleEndian>()?;
-            header.push(int);
+            header.push(file.read_u32::<LittleEndian>()?);
+        }
+
+        if self.skip {
+            let child_count = header[1];
+            let expected_size = (child_count * 2 + 5) as usize;
+            while header.len() < expected_size {
+                header.push(file.read_u32::<LittleEndian>()?);
+            }
         }
 
         Ok(header)
