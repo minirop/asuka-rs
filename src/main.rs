@@ -87,16 +87,28 @@ impl Processor {
                 self.print(depth); println!("{child}: from {:#X} to {:#X}", offset + previous_header_size, offset + size + previous_header_size);
 
                 file.seek(SeekFrom::Start((offset + previous_header_size) as u64))?;
-                let magic = file.read_u32::<BigEndian>()?;
+                let mut magic = [0u8; 4];
+                file.read(&mut magic)?;
+                //file.read_u32::<BigEndian>()?;
                 match magic {
-                    0x01000000 => {
+                    [1, 0, 0, 0] => {
                         file.seek(SeekFrom::Current(-4))?;
                         let cur_pos = file.seek(SeekFrom::Current(0))? as u32;
                         self.analyse(file, cur_pos, depth + 1)?;
                     },
-                    0x746D6F31 => { self.print(depth + 1); println!("tmo1"); },
-                    0x44447620 => { self.print(depth + 1); println!("dds1"); },
-                    _ => { self.print(depth + 1); println!("unknown: {:#X}", magic); },
+                    [0x74, 0x6D, 0x6F, 0x31] => { self.print(depth + 1); println!("tmo1"); },
+                    [0x44, 0x44, 0x76, 0x20] => { self.print(depth + 1); println!("dds1"); },
+                    _ => {
+                        self.print(depth + 1);
+                        let ascii = magic.into_iter().all(|x| x.is_ascii_graphic());
+                        let maybe_str = String::from_utf8(magic.to_vec());
+                        let magic = if ascii && maybe_str.is_ok() {
+                            maybe_str.unwrap()
+                        } else {
+                            format!("{:?}", magic)
+                        };
+                        println!("unknown: {}", magic);
+                    },
                 };
             }
         } else {
