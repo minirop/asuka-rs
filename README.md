@@ -39,18 +39,18 @@ Note: Some file have their *size* (if that's really the size) smaller than expec
 
 #### Values of C
 
-0: unknown
-1: the first child contains the filenames, the other children are tmd0 files.
-2: each children is a container where the first child contains the filenames, the second child contains the files in one block¹ (only DDS files?).
-3: same as 1 but with tmo1 files.
-4: same as 3, don't know the difference.
-5: depends on the number of children???
-- if 1 or 2, looks like scripts?
-- if 3, names then 2 navmesh
-- if 4, names then starting by [3, 0, 0, 0], also scripts?
-6: the first child contains the filenames, the second child contains the files in one block¹ (only DDS files? only in `effects/`)
-7: same as 1 but with unknown files.
-8: Same as 2, but contains 2 files: mtl.csv and <model>.bin.
+- 0: unknown
+- 1: the first child contains the filenames, the other children are tmd0 files.
+- 2: each children is a container where the first child contains the filenames, the second child contains the files in one block¹ (only DDS files?).
+- 3: same as 1 but with tmo1 files.
+- 4: same as 3, don't know the difference.
+- 5: depends on the number of children???
+    - if 1 or 2, looks like scripts?
+    - if 3, names then 2 navmesh
+    - if 4, names then starting by [3, 0, 0, 0], also scripts?
+- 6: the first child contains the filenames, the second child contains the files in one block¹ (only DDS files? only in `effects/`)
+- 7: same as 1 but with unknown files.
+- 8: Same as 2, but contains 2 files: mtl.csv and <model>.bin.
 
 ¹: a block start with the size of its header, the number of files, a value (probably its size?), then the offsets (relative to the start of the block)
 
