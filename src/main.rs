@@ -13,6 +13,8 @@ use std::fs::File;
 use clap::Parser;
 use clap_derive::Parser;
 use clap_derive::Args;
+use image_dds::image_from_dds;
+use image_dds::ddsfile::Dds;
 
 #[derive(Parser, Debug)]
 #[command(author = None, version = None, about = None, long_about = None)]
@@ -116,53 +118,110 @@ impl Processor {
                 }
             }
 
-            for child in 0..child_count {
-                let offset = header[(child + 5) as usize] + previous_header_size_and_offset;
-                let size = header[(child + 5 + child_count) as usize];
-                self.print(depth + 1); println!("{child}: from {:#X} to {:#X}", offset, offset + size);
-                
-                file.seek(SeekFrom::Start((offset) as u64))?;
-                let mut magic = [0u8; 4];
-                file.read(&mut magic)?;
+            match header[1] {
+                2 => self.extract_type_2(file, output_file, previous_header_size_and_offset, &header)?,
+                _ => {
+                    for child in 0..child_count {
+                        let offset = header[(child + 5) as usize] + previous_header_size_and_offset;
+                        let size = header[(child + 5 + child_count) as usize];
+                        self.print(depth + 1); println!("{child}: from {:#X} to {:#X}", offset, offset + size);
+                        
+                        file.seek(SeekFrom::Start((offset) as u64))?;
+                        let mut magic = [0u8; 4];
+                        file.read(&mut magic)?;
 
-                match magic {
-                    [1, 0, 0, 0] => {
-                        file.seek(SeekFrom::Current(-4))?;
-                        let cur_pos = file.seek(SeekFrom::Current(0))? as u32;
-                        self.analyse(file, output_file, cur_pos, depth + 1)?;
-                    },
-                    [0x74, 0x6D, 0x6F, 0x31] => {
-                        self.print(depth + 2); println!("tmo1");
-                        self.extract_file(file, output_file, offset, size);
-                    },
-                    [0x74, 0x6D, 0x64, 0x30] => {
-                        self.print(depth + 2); println!("tmd0");
-                        self.extract_file(file, output_file, offset, size);
-                    },
-                    [0x44, 0x44, 0x76, 0x20] => {
-                        self.print(depth + 2); println!("dds1");
-                        self.extract_file(file, output_file, offset, size);
-                    },
-                    _ => {
-                        self.print(depth + 2);
-                        let ascii = magic.into_iter().all(|x| x.is_ascii_graphic());
-                        let maybe_str = String::from_utf8(magic.to_vec());
-                        let magic = if ascii && maybe_str.is_ok() {
-                            maybe_str.unwrap()
-                        } else {
-                            format!("{:?}", magic)
+                        match magic {
+                            [1, 0, 0, 0] => {
+                                file.seek(SeekFrom::Current(-4))?;
+                                let cur_pos = file.seek(SeekFrom::Current(0))? as u32;
+
+                                self.analyse(file, output_file, cur_pos, depth + 1)?;
+                            },
+                            [0x74, 0x6D, 0x6F, 0x31] => {
+                                self.print(depth + 2); println!("tmo1");
+                                let name_override = &format!("{:#X}.tmo", offset);
+                                self.extract_file(file, output_file, offset, size, Some(name_override));
+                            },
+                            [0x74, 0x6D, 0x64, 0x30] => {
+                                self.print(depth + 2); println!("tmd0");
+                                let name_override = &format!("{:#X}.tmd", offset);
+                                self.extract_file(file, output_file, offset, size, Some(name_override));
+                            },
+                            [0x44, 0x44, 0x76, 0x20] => {
+                                self.print(depth + 2); println!("dds1");
+                                let name_override = &format!("{:#X}.dds", offset);
+                                self.extract_file(file, output_file, offset, size, Some(name_override));
+                            },
+                            _ => {
+                                self.print(depth + 2);
+                                let ascii = magic.into_iter().all(|x| x.is_ascii_graphic());
+                                let maybe_str = String::from_utf8(magic.to_vec());
+                                let magic = if ascii && maybe_str.is_ok() {
+                                    maybe_str.unwrap()
+                                } else {
+                                    format!("{:?}", magic)
+                                };
+                                println!("unknown: {}", magic);
+                                self.extract_file(file, output_file, offset, size, None);
+                            },
                         };
-                        println!("unknown: {}", magic);
-                        self.extract_file(file, output_file, offset, size);
-                    },
-                };
+                    }
+                },
+            };
+        }
+
+        Ok(())
+    }
+
+    fn extract_type_2(&self, file: &mut File, output_file: &str, offset: u32, header: &Vec<u32>) -> std::io::Result<()> {
+        if let Some(output_dir) = &self.extract {
+            let strings_start = header[5] + offset;
+            let strings_size = header[7];
+            let files_start = header[6] + offset;
+            let files_size = header[8];
+
+            file.seek(SeekFrom::Start(strings_start as u64))?;
+            let mut buffer = vec![0u8; strings_size as usize];
+            file.read(&mut buffer)?;
+            let strings = String::from_utf8(buffer).unwrap();
+            let filenames: Vec<_> = strings.split(",\r\n").filter(|e| !e.is_empty()).collect();
+
+            println!("{:?}", filenames);
+
+            let file_pos = file.seek(SeekFrom::Start(files_start as u64))?;
+            let header_length = file.read_u32::<LittleEndian>()?;
+            let child_count = file.read_u32::<LittleEndian>()?;
+            assert_eq!(child_count, filenames.len() as u32);
+            assert_eq!(header_length, (child_count + 3) * 4);
+            let content_length = file.read_u32::<LittleEndian>()?;
+
+            let first_pos = file_pos + (header_length + file.read_u32::<LittleEndian>()?) as u64;
+            let mut files_offset = vec![first_pos];
+            let mut files_size = vec![];
+            for _ in 1..filenames.len() {
+                let curr_file_offset = file_pos + (header_length + file.read_u32::<LittleEndian>()?) as u64;
+                files_size.push(curr_file_offset - files_offset.last().unwrap());
+                files_offset.push(curr_file_offset);
+            }
+            let content_end = file_pos + content_length as u64;
+            files_size.push(content_end - files_offset.last().unwrap());
+            assert_eq!(filenames.len(), files_offset.len());
+            assert_eq!(filenames.len(), files_size.len());
+
+            std::fs::create_dir_all(format!("{output_dir}/{output_file}"))?;
+
+            for i in 0..filenames.len() {
+                file.seek(SeekFrom::Start(files_offset[i] as u64))?;
+                let dds = Dds::read(&*file).unwrap();
+                let image = image_from_dds(&dds, 0).unwrap();
+                image.save(&format!("{output_dir}/{output_file}/{}.png", filenames[i])).unwrap();
             }
         }
 
         Ok(())
     }
 
-    fn extract_file(&self, file: &mut File, output_file: &str, start: u32, size: u32) -> std::io::Result<()> {
+    fn extract_file(&self, file: &mut File, output_file: &str, start: u32, size: u32, name_override: Option<&str>) -> std::io::Result<()> {
         if let Some(output_dir) = &self.extract {
             let save = file.seek(SeekFrom::Current(0))?;
             file.seek(SeekFrom::Start(start as u64))?;
@@ -171,7 +230,12 @@ impl Processor {
 
             std::fs::create_dir_all(format!("{output_dir}/{output_file}"))?;
 
-            let mut child_file = File::create(format!("{output_dir}/{output_file}/{:#X}.bin", start))?;
+            let filename = if let Some(name_over) = name_override {
+                name_over.to_string()
+            } else {
+                format!("{:#X}.bin", start)
+            };
+            let mut child_file = File::create(format!("{output_dir}/{output_file}/{filename}"))?;
             child_file.write(&buffer);
 
             file.seek(SeekFrom::Start(save))?;
