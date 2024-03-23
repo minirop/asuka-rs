@@ -6,36 +6,33 @@ _Asuka best girl_
 
 # Format
 
-All files start with some headers (generally 4, but not always) than seems to have that format:
+## Header
 
 - 4 bytes: A
 - 4 bytes: B
 - 4 bytes: C
-- 4 bytes: header's size
-- size - 16 bytes: data
+- 4 bytes: D
+- (size - 16) bytes: data
 
-## Textures (e.g. Ui/Adv_Illust/)
+### 1, 1, 0
 
-| header # | A | B | C | size |
-|----------|---|---|---|------|
-| #1 | 1 | 1 | 0 | 256 |
-| #2 | 0 | 1 | 2 | 256 |
-| #3 | 1 | 1 | 0 | 256 |
-| #4 | 0 | 2 | 0 | 256 |
+D is the size of the header. Known values are 0, 8, 16, 32, 64, and 256.
 
-## Binary/Adv/
+if D is not 0, the following integer is the remaining bytes in that *container* followed by the first 3 bytes of the next header in reverse order.
 
-| header # | A | B | C | size |
-|----------|---|---|---|------|
-| #1 | 1 | 1 | 0 | 32 |
-| #2 | 0 | X | 0 | 16 |
+### 0, B, C
 
-X seems to be the number of `chunks`. Then there is a list of increasing values (offsets?) and finally the `chunks`.
+Second header after a "1, 1, 0". B is the number of `children`. C is unknown.
 
-`chunks` are lists filenames separated by 22 bytes with that format:
-filename 0x00
-0x20 0x20
-4 bytes that are unknown
-15 0x00 bytes
+- 4 bytes: 0
+- 4 bytes: B
+- 4 bytes: C
+- 4 bytes: size
+- 4 bytes: 0
 
-Between each chunk (or before?), there are 0x100 bytes of unknown meaning.
+followed by B file offsets (relative to that header's starting address).
+followed by B sizes, the real size of each children (since they are 0x100 aligned).
+
+followed by 0x00 until the end.
+
+Note: Some file have their *size* (if that's really the size) smaller than expected. See `Binary/Text/EN.cat` in `SK:PBS`, has 17 children with a size of 0x40. But the offsets continues for 0x88 bytes (17 * 8).
