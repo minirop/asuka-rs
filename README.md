@@ -4,6 +4,32 @@ A tool to help analyse .cat from the Senran Kagura series.
 
 _Asuka best girl_
 
+# Usage
+
+## Print the structure of the files in a directory
+
+```console
+$ asuka <directory> [-m 16]
+```
+
+By default, only show the first 8 integers, but that can be increased with the `-m` parameter.
+
+## Extract all files from a directory
+
+```console
+$ asuka <directory> -e <output_directory>
+```
+
+This will retain the full directory structure.
+
+## Pack a directory into a .cat file
+
+```console
+$ asuka <directory> -p <filename.cat>
+```
+
+The directory must contains `metadata.json`.
+
 # Format
 
 ## Header
@@ -31,7 +57,7 @@ Second header after a "1, x, 0". B is the number of `children`. C seems to be th
 - 4 bytes: 0
 - 4 bytes: B
 - 4 bytes: C
-- 4 bytes: size
+- 4 bytes: size (maybe this isn't a size, but the alignment?)
 - 4 bytes: 0
 
 followed by B file offsets (relative to that header's starting address).
@@ -39,7 +65,7 @@ followed by B sizes, the real size of each children (since they are 0x100 aligne
 
 followed by 0x00 until the end.
 
-Note: Some file have their *size* (if that's really the size) smaller than expected. See `Binary/Text/EN.cat` in `SK:PBS`, has 17 children with a size of 0x40. But the offsets/sizes continue for 0x88 bytes (17 * 8).
+Note: Some file have their *size* (if that's really the size) smaller than expected. See `Binary/Text/EN.cat` in `SK:PBS`, has 17 children with a size of 0x40. But the offsets/sizes continue for 0x88 bytes (17 * 8). So maybe the alignment instead of the size?
 
 #### Values of C
 
@@ -56,7 +82,7 @@ Note: Some file have their *size* (if that's really the size) smaller than expec
 - 7: same as 1 but with unknown files.
 - 8: Same as 2, but contains 2 files: mtl.csv and <model>.bin.
 
-¹: a block start with the size of its header, the number of files, a value (probably its size?), then the offsets (relative to the start of the block)
+¹: a block start with the size of its header, the number of files, its size, then the offsets (relative to the start of the block)
 
 ## Example
 

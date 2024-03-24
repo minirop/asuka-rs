@@ -1,29 +1,32 @@
 #![allow(unused)]
+use image_dds::image::buffer::ConvertBuffer;
+use std::env::args;
+use byteorder::*;
+use image_dds::image::io::Reader as ImageReader;
 use crate::ddsfile::*;
 use serde::Serialize;
 use serde::Deserialize;
 use image_dds::*;
 use std::io::Write;
-use byteorder::BigEndian;
 use clap_derive::ValueEnum;
 use std::io::SeekFrom;
 use std::io::Seek;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use byteorder::ReadBytesExt;
-use byteorder::LittleEndian;
 use std::fs::File;
 use clap::Parser;
 use clap_derive::Parser;
 use clap_derive::Args;
 use image_dds::image_from_dds;
+use image_dds::image::*;
 use image_dds::ddsfile::Dds;
 
 #[derive(Parser, Debug)]
 #[command(author = None, version = None, about = None, long_about = None)]
 struct Args {
-    directory: String,
+    /// Directory to scout for .cat files to analyse/extract or folder to pack into a .cat file (if --pack is set)
+    input: String,
 
     /// The number of int to print for each header
     #[arg(short, long, default_value_t = 8)]
@@ -32,32 +35,40 @@ struct Args {
     /// directory in which extract the assets
     #[arg(short, long)]
     extract: Option<String>,
+
+    /// File into which the assets wille be packed
+    #[arg(short, long)]
+    pack: Option<String>,
 }
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
-    let path = Path::new(&args.directory);
+    let path = Path::new(&args.input);
     if !path.exists() {
-        println!("'{}' does not exist.", args.directory);
+        println!("'{}' does not exist.", args.input);
         return Ok(());
     }
 
     if !path.is_dir() {
-        println!("'{}' is not a directory.", args.directory);
+        println!("'{}' is not a directory.", args.input);
         return Ok(());
     }
 
     let mut proc = Processor {
         max: args.max,
         extract: args.extract.clone(),
-        root: if args.directory.ends_with("/") {
-            args.directory.clone()
+        root: if args.input.ends_with("/") {
+            args.input.clone()
         } else {
-            format!("{}/", args.directory)
+            format!("{}/", args.input)
         },
     };
-    proc.process_files_in_dir(&args.directory)
+    if let Some(output) = args.pack {
+        proc.pack_folder(&output)
+    } else {
+        proc.process_files_in_dir(&args.input)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -77,14 +88,10 @@ struct Texture {
 #[derive(Serialize, Deserialize, Debug)]
 enum ArchiveEntry {
     Container(Container),
-    ListOfTextures { id: u32, textures: Vec<Texture> },
+    ListOfTextures(Vec<Texture>),
     File(String),
     List { id: u32, files: Vec<String> },
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct CatArchive {
-    root: Container,
+    ListOfEntries(Vec<ArchiveEntry>),
 }
 
 struct Processor {
@@ -145,6 +152,7 @@ impl Processor {
         let previous_header_size = header.len() * 4;
         let previous_header_size_and_offset = previous_header_size as u32 + offset;
         let header_size = header[3];
+        assert_eq!(previous_header_size as u32, header_size);
 
         let mut header = self.read_header(file)?;
         self.display_header(&header, depth);
@@ -166,44 +174,37 @@ impl Processor {
             }
 
             match header[2] {
-                1 | 3 if header[2] == 256 | 4 | 7 => {
+                1 | 3 | 4 | 7 => {
                     let child = self.extract_list(file, output_file, previous_header_size_and_offset, depth + 1, &header, header[2])?;
                     children.push(child);
                 },
                 2 => {
-                    let child = self.extract_block_2(file, output_file, previous_header_size_and_offset, depth + 1)?;
-                    children.push(child);
+                    let mut vec = vec![];
+
+                    for _ in 0..header[1] {
+                        let child = self.extract_block_2(file, output_file, previous_header_size_and_offset, depth + 1)?;
+                        vec.push(child);
+                    }
+
+                    children.push(ArchiveEntry::ListOfEntries(vec));
                 },
                 6 => {
                     let child = self.extract_block(file, output_file, previous_header_size_and_offset, depth + 1, &header, 6)?;
                     children.push(child);
                 },
-                _ => {
+                0 => {
                     for child in 0..child_count {
                         let offset = header[(child + 5) as usize] + previous_header_size_and_offset;
                         let size = header[(child + 5 + child_count) as usize];
                         self.print(depth + 1); println!("{child}: from {:#X} to {:#X}", offset, offset + size);
                         
                         file.seek(SeekFrom::Start((offset) as u64))?;
-                        let mut magic = [0u8; 4];
-                        file.read(&mut magic)?;
-
-                        self.print(depth + 2);
-                        let ascii = magic.into_iter().all(|x| x.is_ascii_graphic());
-                        let maybe_str = String::from_utf8(magic.to_vec());
-
-                        let mut name_override = None;
-                        let magic = if ascii && maybe_str.is_ok() {
-                            let ext = maybe_str.unwrap();
-                            name_override = Some(format!("{:#X}.{}", offset, ext));
-                            ext
-                        } else {
-                            println!("unknown: {:?}", magic);
-                            format!("{:?}", magic)
-                        };
-                        self.extract_file(file, output_file, offset, size, name_override)?;
-                        children.push(ArchiveEntry::File(format!("{:#X}.bin", offset)));
+                        let child = self.analyse(file, output_file, offset, depth + 1)?;
+                        children.push(ArchiveEntry::Container(child));
                     }
+                },
+                _ => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Invalid header type: {:#X}", header[2])));
                 },
             };
         }
@@ -246,9 +247,11 @@ impl Processor {
             let extension = match magic {
                 [0x74, 0x6D, 0x6F, 0x31] => "tmo1",
                 [0x74, 0x6D, 0x64, 0x30] => "tmd0",
-                _ => panic!("Unknown file magic: {:?}", magic),
+                _ => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Unknown file magic: {:?}", magic)));
+                },
             };
-            let name_override = format!("{:#X}.{}", offset, extension);
+            let name_override = format!("{}.{}", filenames[i], extension);
             files.push(name_override.clone());
 
             if let Some(output_dir) = &self.extract {
@@ -277,6 +280,7 @@ impl Processor {
         if header.len() < 5 {
             eprintln!("{output_file}: {:?}", header);
         }
+
         let strings_start = header[5] + offset;
         let strings_size = header[7];
         let files_start = header[6] + offset;
@@ -285,12 +289,14 @@ impl Processor {
         file.seek(SeekFrom::Start(strings_start as u64))?;
         let mut buffer = vec![0u8; strings_size as usize];
         file.read(&mut buffer)?;
+
         let strings = String::from_utf8(buffer).unwrap();
         let filenames: Vec<_> = strings.split(",").map(|e| e.trim()).filter(|e| !e.is_empty()).collect();
 
         let file_pos = file.seek(SeekFrom::Start(files_start as u64))?;
         let header_length = file.read_u32::<LittleEndian>()?;
         let child_count = file.read_u32::<LittleEndian>()?;
+
         assert_eq!(child_count, filenames.len() as u32);
         assert_eq!(header_length, (child_count + 3) * 4);
         let content_length = file.read_u32::<LittleEndian>()?;
@@ -312,25 +318,38 @@ impl Processor {
         for i in 0..filenames.len() {
             self.print(depth + 1); println!("{}: from {:#X} to {:#X}", filenames[i], files_offset[i], files_offset[i] + files_size[i]);
             file.seek(SeekFrom::Start(files_offset[i] as u64))?;
-            let dds = Dds::read(&*file).unwrap();
+            let mut dds_buffer = vec![0u8; files_size[i] as usize];
+            file.read(&mut dds_buffer);
+            let save = file.seek(SeekFrom::Current(0))?;
+            let dds = Dds::read(&*dds_buffer).unwrap();
             textures.push(Texture {
                 name: filenames[i].to_string(),
                 format: d3d_to_dds(&dds.get_d3d_format().unwrap()),
             });
         }
 
+        let save = file.seek(SeekFrom::Current(0))?;
         if let Some(output_dir) = &self.extract {
             std::fs::create_dir_all(format!("{output_dir}/{output_file}"))?;
 
+            let save = file.seek(SeekFrom::Current(0))?;
             for i in 0..filenames.len() {
                 file.seek(SeekFrom::Start(files_offset[i] as u64))?;
                 let dds = Dds::read(&*file).unwrap();
                 let image = image_from_dds(&dds, 0).unwrap();
                 image.save(&format!("{output_dir}/{output_file}/{}.png", filenames[i])).unwrap();
             }
+            file.seek(SeekFrom::Start(save))?;
         }
 
-        Ok(ArchiveEntry::ListOfTextures { id, textures })
+        if save % 256 > 0 {
+            let padding = 256 - (save % 256);
+            for _ in 0..padding {
+                file.read_u8()?;
+            }
+        }
+
+        Ok(ArchiveEntry::ListOfTextures(textures))
     }
 
     fn extract_file(&self, file: &mut File, output_file: &str, start: u32, size: u32, name_override: Option<String>) -> std::io::Result<()> {
@@ -373,6 +392,250 @@ impl Processor {
 
         Ok(header)
     }
+
+    fn pack_folder(&self, output_file: &str) -> std::io::Result<()> {
+        if !Path::new(&format!("{}metadata.json", self.root)).exists() {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{}metadata.json", self.root)));
+        }
+
+        let strbuf = fs::read_to_string(format!("{}metadata.json", self.root)).unwrap();
+        let archive: Container = serde_json::from_str(&strbuf).unwrap();
+
+        let mut file = File::create(output_file)?;
+        self.pack_container(&mut file, &archive)
+    }
+
+    fn pack_container(&self, file: &mut File, container: &Container) -> std::io::Result<()> {
+        let addr = file.seek(SeekFrom::Current(0))?;
+        let is_root = addr == 0;
+
+        if !is_root {
+            file.seek(SeekFrom::Start(addr - 0xEC))?;
+            file.write_u32::<LittleEndian>(addr as u32 - 0x100)?;
+            file.seek(SeekFrom::Start(addr))?;
+        }
+
+        file.write_u32::<LittleEndian>(1)?;
+        file.write_u32::<LittleEndian>(1)?;
+        file.write_u32::<LittleEndian>(0)?;
+        file.write_u32::<LittleEndian>(container.header_size)?;
+        let container_size_addr = file.seek(SeekFrom::Current(0))?;
+        file.write_u32::<LittleEndian>(0x42424242)?;
+        file.write_u32::<LittleEndian>(container.format)?;
+        file.write_u32::<LittleEndian>(container.children.len() as u32)?;
+        for _ in 0..(container.header_size / 4 - 7) {
+            file.write_u32::<LittleEndian>(0)?;
+        }
+
+        file.write_u32::<LittleEndian>(0)?;
+        file.write_u32::<LittleEndian>(container.children.len() as u32)?;
+        file.write_u32::<LittleEndian>(container.format)?;
+        file.write_u32::<LittleEndian>(container.subheader_size)?;
+        file.write_u32::<LittleEndian>(0)?;
+        for _ in 0..(64 - 5) {
+            file.write_u32::<LittleEndian>(0)?;
+        }
+
+        for (id, child) in container.children.iter().enumerate() {
+            let child_starting_addr = file.seek(SeekFrom::Current(0))?;
+            match child {
+                ArchiveEntry::List { id, files } => self.pack_list(file, id, files)?,
+                ArchiveEntry::ListOfTextures(textures) => self.pack_block(file, textures)?,
+                ArchiveEntry::ListOfEntries(entries) => self.pack_list_of_blocks(file, entries)?,
+                ArchiveEntry::Container(container) => self.pack_container(file, container)?,
+                _ => panic!("{:?}", child),
+            };
+
+            let curr_addr = file.seek(SeekFrom::Current(0))?;
+            if curr_addr % 256 > 0 {
+                let padding = 256 - (curr_addr % 256);
+                for _ in 0..padding {
+                    file.write_u8(0)?;
+                }
+            }
+        }
+
+        let cur_pos = file.seek(SeekFrom::Current(0))?;
+        file.seek(SeekFrom::Start(container_size_addr))?;
+        file.write_u32::<LittleEndian>((cur_pos - addr - 256) as u32)?;
+        file.seek(SeekFrom::Start(cur_pos))?;
+
+        Ok(())
+    }
+
+    fn pack_list(&self, file: &mut File, id: &u32, files: &Vec<String>) -> std::io::Result<()> {
+        let addr = file.seek(SeekFrom::Current(0))?;
+
+        let strings = files.iter().map(|name| {
+            if let Some(pos) = name.rfind(".") {
+                format!("{}", &name[0..pos])
+            } else {
+                name.clone()
+            }
+        }).collect::<Vec<_>>().join(",\r\n");
+        write!(file, "{},\r\n", strings)?;
+        let padding = file.seek(SeekFrom::Current(0))?;
+
+        file.seek(SeekFrom::Start(addr - 0xEC))?;
+        file.write_u32::<LittleEndian>(256);
+
+        file.seek(SeekFrom::Start(addr - 0xEC + (files.len() as u64 * 4 + 4)))?;
+        file.write_u32::<LittleEndian>((padding - addr) as u32);
+
+        file.seek(SeekFrom::Start(addr - 0xFC))?;
+        file.write_u32::<LittleEndian>(files.len() as u32 + 1);
+
+        file.seek(SeekFrom::Start(padding))?;
+        if padding % 256 > 0 {
+            let padding = 256 - (padding % 256);
+            for _ in 0..padding {
+                file.write_u8(0)?;
+            }
+        }
+
+        for (id, f) in files.iter().enumerate() {
+            let filename = format!("{}{}", self.root, f);
+            let data = fs::read(filename)?;
+            
+            let f_start = file.seek(SeekFrom::Current(0))?;
+            file.write(&data)?;
+            let f_end = file.seek(SeekFrom::Current(0))?;
+
+            let file_offset_offset = addr - 0xEC + (id + 1) as u64 * 4;
+            file.seek(SeekFrom::Start(file_offset_offset))?;
+            file.write_u32::<LittleEndian>((f_start - addr) as u32 + 256);
+            file.seek(SeekFrom::Start(file_offset_offset + 4 + (files.len() as u64 * 4)))?;
+            file.write_u32::<LittleEndian>((f_end - f_start) as u32);
+
+            file.seek(SeekFrom::Start(f_end))?;
+        }
+
+        Ok(())
+    }
+
+    fn pack_list_of_blocks(&self, file: &mut File, entries: &Vec<ArchiveEntry>) -> std::io::Result<()> {
+        for entry in entries {
+            match entry {
+                ArchiveEntry::ListOfTextures(textures) => self.pack_block(file, textures)?,
+                _ => panic!(""),
+            };
+        }
+        Ok(())
+    }
+
+    fn pack_block(&self, file: &mut File, textures: &Vec<Texture>) -> std::io::Result<()> {
+        file.write_u32::<LittleEndian>(1)?;
+        file.write_u32::<LittleEndian>(1)?;
+        file.write_u32::<LittleEndian>(0)?;
+        file.write_u32::<LittleEndian>(256)?;
+        file.write_u32::<LittleEndian>(0x42424242)?;
+        file.write_u32::<LittleEndian>(0)?;
+        file.write_u32::<LittleEndian>(2)?;
+        for _ in 0..(64 - 7) {
+            file.write_u32::<LittleEndian>(0)?;
+        }
+
+        file.write_u32::<LittleEndian>(0)?;
+        file.write_u32::<LittleEndian>(2)?;
+        file.write_u32::<LittleEndian>(0)?;
+        file.write_u32::<LittleEndian>(256)?;
+        file.write_u32::<LittleEndian>(0)?;
+        // offsets
+        file.write_u32::<LittleEndian>(0x69696969)?;
+        file.write_u32::<LittleEndian>(0x69696969)?;
+        // sizes
+        file.write_u32::<LittleEndian>(0x69696969)?;
+        file.write_u32::<LittleEndian>(0x69696969)?;
+        for _ in 0..(64 - 9) {
+            file.write_u32::<LittleEndian>(0)?;
+        }
+
+        let data_begin_addr = file.seek(SeekFrom::Current(0))?;
+        let mut files_offset = vec![data_begin_addr];
+        let mut files_size = vec![];
+
+        let strings = textures.iter().map(|tex| tex.name.clone()).collect::<Vec<_>>().join(",\r\n");
+        let strings = format!("{strings},\r\n");
+        write!(file, "{}", strings)?;
+        for _ in 0..(256 - strings.len()) {
+            file.write_u8(0)?;
+        }
+
+        files_size.push(strings.len() as u64);
+        let textures_begin_addr = file.seek(SeekFrom::Current(0))?;
+
+        file.seek(SeekFrom::Start(data_begin_addr - (256 - 20)))?;
+        file.write_u32::<LittleEndian>(256);
+        file.write_u32::<LittleEndian>(256 + (textures_begin_addr - data_begin_addr) as u32);
+        file.write_u32::<LittleEndian>(strings.len() as u32);
+
+        file.seek(SeekFrom::Start(textures_begin_addr))?;
+        let child_count = textures.len() as u32;
+        let header_length = (child_count + 3) * 4;
+        file.write_u32::<LittleEndian>(header_length)?;
+        file.write_u32::<LittleEndian>(child_count)?;
+
+        let block_size_addr = file.seek(SeekFrom::Current(0))?;
+        file.write_u32::<LittleEndian>(0x55555555)?;
+        // offsets
+        for _ in 0..textures.len() {
+            file.write_u32::<LittleEndian>(0x77777777)?;
+        }
+
+        let mut textures_offset = vec![];
+        let mut textures_size = vec![];
+        for tex in textures {
+            let texture_begin_addr = file.seek(SeekFrom::Current(0))?;
+
+            let filename = format!("{}{}.png", self.root, tex.name);
+            let img = ImageReader::open(&filename).unwrap().decode().unwrap();
+            let img = match img {
+                DynamicImage::ImageRgba8(image) => image,
+                DynamicImage::ImageRgb8(image) => {
+                    let rgba_image: RgbaImage = image.convert();
+                    rgba_image
+                },
+                _ => panic!("{} is not a RGB(A) image: {:?}", filename, img),
+            };
+
+            let d3dformat = dds_to_d3d(&tex.format);
+            let dds = internal::dds_from_image(&img, d3dformat).unwrap();
+            dds.write(file).unwrap();
+            let cur_pos = file.seek(SeekFrom::Current(0))?;
+
+            textures_offset.push(texture_begin_addr);
+            textures_size.push(cur_pos - texture_begin_addr);
+        }
+
+        let saved_pos = file.seek(SeekFrom::Current(0))?;
+
+        let last_addr = textures_offset.last().unwrap() + textures_size.last().unwrap() - textures_offset[0];
+        file.seek(SeekFrom::Start(block_size_addr))?;
+        let full_size = last_addr as u32 + header_length as u32;
+        file.write_u32::<LittleEndian>(full_size)?;
+
+        for off in &textures_offset {
+            file.write_u32::<LittleEndian>((off - textures_offset[0]) as u32)?;
+        }
+
+        file.seek(SeekFrom::Start(data_begin_addr - (256 - 32)))?;
+        file.write_u32::<LittleEndian>(full_size);
+
+        file.seek(SeekFrom::Start(data_begin_addr - (512 - 16)))?;
+        let data_begin_addr_mod = 0x100 - (data_begin_addr % 0x100);
+        let cont_size = saved_pos - (data_begin_addr - data_begin_addr_mod);
+        file.write_u32::<LittleEndian>(cont_size as u32);
+
+        file.seek(SeekFrom::Start(saved_pos))?;
+        if saved_pos % 256 > 0 {
+            let padding = 256 - (saved_pos % 256);
+            for _ in 0..padding {
+                file.write_u8(0)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -394,7 +657,7 @@ fn d3d_to_dds(format: &D3DFormat) -> DdsFormat {
 fn dds_to_d3d(format: &DdsFormat) -> D3DFormat {
     match format {
         DdsFormat::Dxt1 => D3DFormat::DXT1,
-        DdsFormat::Dxt3 => D3DFormat::DXT3,
+        DdsFormat::Dxt3 => D3DFormat::DXT1, // image_dds doesn't support DXT3
         DdsFormat::Dxt5 => D3DFormat::DXT5,
     }
 }
