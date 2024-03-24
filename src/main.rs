@@ -52,7 +52,11 @@ fn main() -> std::io::Result<()> {
         max: args.max,
         skip: args.skip,
         extract: args.extract.clone(),
-        root: args.directory.clone(),
+        root: if args.directory.ends_with("/") {
+            args.directory.clone()
+        } else {
+            format!("{}/", args.directory)
+        },
     };
     proc.process_files_in_dir(&args.directory)
 }
@@ -94,16 +98,19 @@ impl Processor {
         Ok(())
     }
 
-    fn analyse(&self, file: &mut File, output_file: &str, offset: u32, depth: u32) -> std::io::Result<()> {
-        let header = self.read_header(file)?;
+    fn display_header(&self, header: &Vec<u32>, depth: u32) {
         let to_show = std::cmp::min(header.len(), self.max as usize);
         self.print(depth); println!("{:?}", &header[0..to_show]);
+    }
+
+    fn analyse(&self, file: &mut File, output_file: &str, offset: u32, depth: u32) -> std::io::Result<()> {
+        let header = self.read_header(file)?;
+        self.display_header(&header, depth);
         let previous_header_size = header.len() * 4;
         let previous_header_size_and_offset = previous_header_size as u32 + offset;
 
         let mut header = self.read_header(file)?;
-        let to_show = std::cmp::min(header.len(), self.max as usize);
-        self.print(depth); println!("{:?}", &header[0..to_show]);
+        self.display_header(&header, depth);
 
         let child_count = header[1];
         if child_count > 0 {
@@ -118,8 +125,8 @@ impl Processor {
                 }
             }
 
-            match header[1] {
-                2 => self.extract_type_2(file, output_file, previous_header_size_and_offset, &header)?,
+            match header[2] {
+                2 => self.extract_type_2(file, output_file, previous_header_size_and_offset, depth + 1)?,
                 _ => {
                     for child in 0..child_count {
                         let offset = header[(child + 5) as usize] + previous_header_size_and_offset;
@@ -173,7 +180,13 @@ impl Processor {
         Ok(())
     }
 
-    fn extract_type_2(&self, file: &mut File, output_file: &str, offset: u32, header: &Vec<u32>) -> std::io::Result<()> {
+    fn extract_type_2(&self, file: &mut File, output_file: &str, offset: u32, depth: u32) -> std::io::Result<()> {
+        let header = self.read_header(file)?;
+        self.display_header(&header, depth);
+        let header = self.read_header(file)?;
+        self.display_header(&header, depth);
+        let offset = offset + 0x200;
+
         if let Some(output_dir) = &self.extract {
             let strings_start = header[5] + offset;
             let strings_size = header[7];
@@ -185,8 +198,6 @@ impl Processor {
             file.read(&mut buffer)?;
             let strings = String::from_utf8(buffer).unwrap();
             let filenames: Vec<_> = strings.split(",\r\n").filter(|e| !e.is_empty()).collect();
-
-            println!("{:?}", filenames);
 
             let file_pos = file.seek(SeekFrom::Start(files_start as u64))?;
             let header_length = file.read_u32::<LittleEndian>()?;
@@ -208,9 +219,13 @@ impl Processor {
             assert_eq!(filenames.len(), files_offset.len());
             assert_eq!(filenames.len(), files_size.len());
 
+            self.print(depth + 1); println!("offsets: {:?}", files_offset);
+            self.print(depth + 1); println!("sizes:   {:?}", files_size);
+
             std::fs::create_dir_all(format!("{output_dir}/{output_file}"))?;
 
             for i in 0..filenames.len() {
+                self.print(depth + 1); println!("- {}", filenames[i]);
                 file.seek(SeekFrom::Start(files_offset[i] as u64))?;
                 let dds = Dds::read(&*file).unwrap();
                 let image = image_from_dds(&dds, 0).unwrap();
