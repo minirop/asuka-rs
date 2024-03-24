@@ -29,11 +29,7 @@ struct Args {
     #[arg(short, long, default_value_t = 8)]
     max: u32,
 
-    /// skip size check when children don't fit
-    #[arg(short, long, default_value_t = false)]
-    skip: bool,
-
-    /// skip size check when children don't fit
+    /// directory in which extract the assets
     #[arg(short, long)]
     extract: Option<String>,
 }
@@ -54,7 +50,6 @@ fn main() -> std::io::Result<()> {
 
     let mut proc = Processor {
         max: args.max,
-        skip: args.skip,
         extract: args.extract.clone(),
         root: if args.directory.ends_with("/") {
             args.directory.clone()
@@ -82,7 +77,7 @@ struct Texture {
 #[derive(Serialize, Deserialize, Debug)]
 enum ArchiveEntry {
     Container(Container),
-    ListOfTextures(Vec<Texture>),
+    ListOfTextures { id: u32, textures: Vec<Texture> },
     File(String),
     List { id: u32, files: Vec<String> },
 }
@@ -94,7 +89,6 @@ struct CatArchive {
 
 struct Processor {
     max: u32,
-    skip: bool,
     extract: Option<String>,
     root: String,
 }
@@ -122,7 +116,14 @@ impl Processor {
                 };
                 println!("======================= {relative_filename} =======================");
 
-                let container = self.analyse(&mut file, &format!("{relative_filename}_out"), 0, 0)?;
+                let container = match self.analyse(&mut file, &format!("{relative_filename}_out"), 0, 0) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        println!("{e}");
+                        eprintln!("{relative_filename}: {e}");
+                        continue;
+                    },
+                };
                 if let Some(output_dir) = &self.extract {
                     let writer = File::create(format!("{output_dir}/{relative_filename}_out/metadata.json"))?;
                     serde_json::to_writer_pretty(writer, &container).unwrap();
@@ -165,12 +166,16 @@ impl Processor {
             }
 
             match header[2] {
-                1 | 3 | 4 | 6 | 7 => {
+                1 | 3 if header[2] == 256 | 4 | 7 => {
                     let child = self.extract_list(file, output_file, previous_header_size_and_offset, depth + 1, &header, header[2])?;
                     children.push(child);
                 },
                 2 => {
-                    let child = self.extract_type_2(file, output_file, previous_header_size_and_offset, depth + 1)?;
+                    let child = self.extract_block_2(file, output_file, previous_header_size_and_offset, depth + 1)?;
+                    children.push(child);
+                },
+                6 => {
+                    let child = self.extract_block(file, output_file, previous_header_size_and_offset, depth + 1, &header, 6)?;
                     children.push(child);
                 },
                 _ => {
@@ -183,46 +188,21 @@ impl Processor {
                         let mut magic = [0u8; 4];
                         file.read(&mut magic)?;
 
-                        match magic {
-                            [1, 0, 0, 0] => {
-                                file.seek(SeekFrom::Current(-4))?;
-                                let cur_pos = file.seek(SeekFrom::Current(0))? as u32;
+                        self.print(depth + 2);
+                        let ascii = magic.into_iter().all(|x| x.is_ascii_graphic());
+                        let maybe_str = String::from_utf8(magic.to_vec());
 
-                                let child = self.analyse(file, output_file, cur_pos, depth + 1)?;
-                                children.push(ArchiveEntry::Container(child));
-                            },
-                            [0x74, 0x6D, 0x6F, 0x31] => {
-                                self.print(depth + 2); println!("tmo1");
-                                let name_override = &format!("{:#X}.tmo", offset);
-                                self.extract_file(file, output_file, offset, size, Some(name_override))?;
-                                children.push(ArchiveEntry::File(name_override.to_string()));
-                            },
-                            [0x74, 0x6D, 0x64, 0x30] => {
-                                self.print(depth + 2); println!("tmd0");
-                                let name_override = &format!("{:#X}.tmd", offset);
-                                self.extract_file(file, output_file, offset, size, Some(name_override))?;
-                                children.push(ArchiveEntry::File(name_override.to_string()));
-                            },
-                            [0x44, 0x44, 0x76, 0x20] => {
-                                self.print(depth + 2); println!("dds1");
-                                let name_override = &format!("{:#X}.dds", offset);
-                                self.extract_file(file, output_file, offset, size, Some(name_override))?;
-                                children.push(ArchiveEntry::File(name_override.to_string()));
-                            },
-                            _ => {
-                                self.print(depth + 2);
-                                let ascii = magic.into_iter().all(|x| x.is_ascii_graphic());
-                                let maybe_str = String::from_utf8(magic.to_vec());
-                                let magic = if ascii && maybe_str.is_ok() {
-                                    maybe_str.unwrap()
-                                } else {
-                                    format!("{:?}", magic)
-                                };
-                                println!("unknown: {}", magic);
-                                self.extract_file(file, output_file, offset, size, None)?;
-                                children.push(ArchiveEntry::File(format!("{:#X}.bin", offset)));
-                            },
+                        let mut name_override = None;
+                        let magic = if ascii && maybe_str.is_ok() {
+                            let ext = maybe_str.unwrap();
+                            name_override = Some(format!("{:#X}.{}", offset, ext));
+                            ext
+                        } else {
+                            println!("unknown: {:?}", magic);
+                            format!("{:?}", magic)
                         };
+                        self.extract_file(file, output_file, offset, size, name_override)?;
+                        children.push(ArchiveEntry::File(format!("{:#X}.bin", offset)));
                     }
                 },
             };
@@ -237,13 +217,19 @@ impl Processor {
     }
 
     fn extract_list(&self, file: &mut File, output_file: &str, offset: u32, depth: u32, header: &Vec<u32>, id: u32) -> std::io::Result<ArchiveEntry> {
+        let child_count = header[1];
         let strings_start = header[5] + offset;
-        let strings_size = header[7];
+        let strings_size = header[5 + child_count as usize];
 
         file.seek(SeekFrom::Start(strings_start as u64))?;
         let mut buffer = vec![0u8; strings_size as usize];
         file.read(&mut buffer)?;
-        let strings = String::from_utf8(buffer).unwrap();
+        let strings = match String::from_utf8(buffer) {
+            Ok(s) => s,
+            Err(e) => {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Not a string at {:#X} (size {})", strings_start, strings_size)));
+            },
+        };
         let filenames: Vec<_> = strings.split(",\r\n").filter(|e| !e.is_empty()).collect();
 
         let mut files = vec![];
@@ -262,8 +248,8 @@ impl Processor {
                 [0x74, 0x6D, 0x64, 0x30] => "tmd0",
                 _ => panic!("Unknown file magic: {:?}", magic),
             };
-            let name_override = &format!("{:#X}.{}", offset, extension);
-            files.push(name_override.to_string());
+            let name_override = format!("{:#X}.{}", offset, extension);
+            files.push(name_override.clone());
 
             if let Some(output_dir) = &self.extract {
                 self.extract_file(file, output_file, offset, size, Some(name_override))?;
@@ -273,13 +259,24 @@ impl Processor {
         Ok(ArchiveEntry::List { id, files })
     }
 
-    fn extract_type_2(&self, file: &mut File, output_file: &str, offset: u32, depth: u32) -> std::io::Result<ArchiveEntry> {
+    fn extract_block_2(&self, file: &mut File, output_file: &str, offset: u32, depth: u32) -> std::io::Result<ArchiveEntry> {
         let header = self.read_header(file)?;
         self.display_header(&header, depth);
         let header = self.read_header(file)?;
         self.display_header(&header, depth);
         let offset = offset + 0x200;
 
+        if header == [0, 0, 0, 0] {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Unrecognized data (empty)".to_string()));
+        }
+
+        self.extract_block(file, output_file, offset, depth, &header, 2)
+    }
+
+    fn extract_block(&self, file: &mut File, output_file: &str, offset: u32, depth: u32, header: &Vec<u32>, id: u32) -> std::io::Result<ArchiveEntry> {
+        if header.len() < 5 {
+            eprintln!("{output_file}: {:?}", header);
+        }
         let strings_start = header[5] + offset;
         let strings_size = header[7];
         let files_start = header[6] + offset;
@@ -289,7 +286,7 @@ impl Processor {
         let mut buffer = vec![0u8; strings_size as usize];
         file.read(&mut buffer)?;
         let strings = String::from_utf8(buffer).unwrap();
-        let filenames: Vec<_> = strings.split(",\r\n").filter(|e| !e.is_empty()).collect();
+        let filenames: Vec<_> = strings.split(",").map(|e| e.trim()).filter(|e| !e.is_empty()).collect();
 
         let file_pos = file.seek(SeekFrom::Start(files_start as u64))?;
         let header_length = file.read_u32::<LittleEndian>()?;
@@ -333,10 +330,10 @@ impl Processor {
             }
         }
 
-        Ok(ArchiveEntry::ListOfTextures(textures))
+        Ok(ArchiveEntry::ListOfTextures { id, textures })
     }
 
-    fn extract_file(&self, file: &mut File, output_file: &str, start: u32, size: u32, name_override: Option<&str>) -> std::io::Result<()> {
+    fn extract_file(&self, file: &mut File, output_file: &str, start: u32, size: u32, name_override: Option<String>) -> std::io::Result<()> {
         if let Some(output_dir) = &self.extract {
             let save = file.seek(SeekFrom::Current(0))?;
             file.seek(SeekFrom::Start(start as u64))?;
@@ -372,14 +369,6 @@ impl Processor {
 
         for i in 4..(header[3] / 4) {
             header.push(file.read_u32::<LittleEndian>()?);
-        }
-
-        if self.skip {
-            let child_count = header[1];
-            let expected_size = (child_count * 2 + 5) as usize;
-            while header.len() < expected_size {
-                header.push(file.read_u32::<LittleEndian>()?);
-            }
         }
 
         Ok(header)

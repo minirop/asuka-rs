@@ -20,9 +20,13 @@ D is the size of the header. Known values are 0, 8, 16, 32, 64, and 256.
 
 if D is not 0, the following integer is the remaining bytes in that *container* followed by the first 3 bytes of the next header in reverse order.
 
+### 1, 2, 0
+
+Used only in `Camera/Action/pl**.cat`, and contains 9 tmo1 files without the first child containing the filenames.
+
 ### 0, B, C
 
-Second header after a "1, 1, 0". B is the number of `children`. C seems to be the file format of the children (see below).
+Second header after a "1, x, 0". B is the number of `children`. C seems to be the file format of the children (see below).
 
 - 4 bytes: 0
 - 4 bytes: B
@@ -42,7 +46,7 @@ Note: Some file have their *size* (if that's really the size) smaller than expec
 - 0: unknown
 - 1: the first child contains the filenames, the other children are tmd0 files.
 - 2: each children is a container where the first child contains the filenames, the second child contains the files in one block¹ (only DDS files?).
-- 3: same as 1 but with tmo1 files.
+- 3: same as 1 but with tmo1 files. (except for cameras in `1, 2, 0`)
 - 4: same as 3, don't know the difference.
 - 5: depends on the number of children???
     - if 1 or 2, looks like scripts?
@@ -57,3 +61,24 @@ Note: Some file have their *size* (if that's really the size) smaller than expec
 ## Example
 
 Just open [sk-pbs.txt](sk-pbs.txt) which contains the result of running the tool on all files from Senran Kagura Peach Beach Splash.
+
+# Files that don't work
+
+All filenames are from `Peach Beach Splash`.
+
+## corrupted(?) files
+
+For instance, `Motion/Zako/zk**_act_vis.cat`. The 2nd header says it is 256 bytes, but the entire file is 284 bytes.
+
+## Empty(?) files
+
+For instance, `Ui/Adv_Illust/adv_ilst_ev0**.cat` starting at `34` (+ `00`). Their header have a size of 0, but the children are 0x100 aligned and filled with `0x00`.
+
+headers are as follow:
+- at `0x0000`: `[1, 1, 0, 256, 768, 2, 1, 0, ...]`
+- at `0x0100`: `[0, 1, 2, 256, 0, 256, 288, 0, ...]`
+    - This says its child is from `0x200` to `0x320`.
+    - But there are also header at `0x200` and `0x300`.
+- at `0x0200`: `[1, 1, 0, 0, 0, 0, 0, 0, ...]`
+- at `0x0300`: `[0, 2, 0, 256, 0, 256, 256, 0, ...]`
+    - This says it has 2 children both starting at 0x400 with a size of 0 bytes
