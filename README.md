@@ -40,14 +40,16 @@ The directory must contains `metadata.json`.
 - 4 bytes: header size
 - 4 bytes: content size
 - (size - 20) bytes: data
-- 4 bytes: 0
+- 4 bytes: 0 // this is the `byte 0` for files offsets
 - 4 bytes: number of children
 - 4 bytes: type
 - 4 bytes: aligment of children
 - 4 bytes: 0
-- 4 * children bytes: start of children (relative to start of content)
+- 4 * children bytes: start of children (relative to `byte 0`, hence the first file having an offset of `header size` and not 0)
 - 4 * children bytes: size of children
 - 0x00 until aligment
+
+Note: The end of `data` (most of the time just after `content size`) are the next 3 bytes but backwards (`type`, `number of children`, `0`)
 
 #### Values of "type"
 
@@ -86,7 +88,7 @@ headers are as follow:
 - at `0x0000`: `[1, 1, 0, 256, 768, 2, 1, 0, ...]`
 - at `0x0100`: `[0, 1, 2, 256, 0, 256, 288, 0, ...]`
     - This says its child is from `0x200` to `0x320`.
-    - But there are also header at `0x200` and `0x300`.
+    - But there are also headers at `0x200` and `0x300`.
 - at `0x0200`: `[1, 1, 0, 0, 0, 0, 0, 0, ...]`
 - at `0x0300`: `[0, 2, 0, 256, 0, 256, 256, 0, ...]`
     - This says it has 2 children both starting at 0x400 with a size of 0 bytes

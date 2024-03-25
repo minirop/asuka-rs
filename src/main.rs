@@ -22,6 +22,12 @@ use image_dds::image_from_dds;
 use image_dds::image::*;
 use image_dds::ddsfile::Dds;
 
+#[derive(Debug)]
+struct ChildData {
+    offset: u64,
+    size: u64,
+}
+
 #[derive(Parser, Debug)]
 #[command(author = None, version = None, about = None, long_about = None)]
 struct Args {
@@ -199,8 +205,16 @@ impl Processor {
                         self.print(depth + 1); println!("{child}: from {:#X} to {:#X}", offset, offset + size);
                         
                         file.seek(SeekFrom::Start((offset) as u64))?;
-                        let child = self.extract_container(file, output_file, offset, depth + 1)?;
-                        children.push(ArchiveEntry::Container(child));
+                        let magic = file.read_u32::<LittleEndian>()?;
+                        if magic == 1 {
+                            file.seek(SeekFrom::Current(-4))?;
+                            let child = self.extract_container(file, output_file, offset, depth + 1)?;
+                            children.push(ArchiveEntry::Container(child));
+                        } else {
+                            self.print(depth + 2); println!("Unknown child format: {:#X}", magic);
+                            self.extract_file(file, output_file, offset, size, None)?;
+                            children.push(ArchiveEntry::File(format!("{:#X}.bin", offset)));
+                        }
                     }
                 },
                 _ => {
@@ -402,53 +416,75 @@ impl Processor {
         let archive: Container = serde_json::from_str(&strbuf).unwrap();
 
         let mut file = File::create(output_file)?;
-        self.pack_container(&mut file, &archive)
+        self.pack_container(&mut file, &archive)?;
+
+        Ok(())
     }
 
-    fn pack_container(&self, file: &mut File, container: &Container) -> std::io::Result<()> {
+    fn pack_container(&self, file: &mut File, container: &Container) -> std::io::Result<Vec<ChildData>> {
         let addr = file.seek(SeekFrom::Current(0))?;
         let is_root = addr == 0;
-
-        if !is_root {
-            file.seek(SeekFrom::Start(addr - 0xEC))?;
-            file.write_u32::<LittleEndian>(addr as u32 - 0x100)?;
-            file.seek(SeekFrom::Start(addr))?;
-        }
 
         file.write_u32::<LittleEndian>(1)?;
         file.write_u32::<LittleEndian>(1)?;
         file.write_u32::<LittleEndian>(0)?;
         file.write_u32::<LittleEndian>(container.header_size)?;
         let container_size_addr = file.seek(SeekFrom::Current(0))?;
-        file.write_u32::<LittleEndian>(0x42424242)?;
+        file.write_u32::<LittleEndian>(0)?;
         file.write_u32::<LittleEndian>(container.format)?;
-        file.write_u32::<LittleEndian>(container.children.len() as u32)?;
+        file.write_u32::<LittleEndian>(0)?;
         for _ in 0..(container.header_size / 4 - 7) {
             file.write_u32::<LittleEndian>(0)?;
         }
 
         file.write_u32::<LittleEndian>(0)?;
-        file.write_u32::<LittleEndian>(container.children.len() as u32)?;
+        let child_count_addr = file.seek(SeekFrom::Current(0))?;
+        file.write_u32::<LittleEndian>(0)?;
         file.write_u32::<LittleEndian>(container.format)?;
         file.write_u32::<LittleEndian>(container.children_alignment)?;
         file.write_u32::<LittleEndian>(0)?;
-        for _ in 0..(64 - 5) {
+        let children_offsets_addr = file.seek(SeekFrom::Current(0))?;
+
+        let mut real_children_count = 0;
+        for child in container.children.iter() {
+            real_children_count += match child {
+                ArchiveEntry::List { id, files } => 2,
+                ArchiveEntry::ListOfTextures(textures) => 1,
+                ArchiveEntry::ListOfEntries(entries) => entries.len(),
+                ArchiveEntry::Container(_) => 1,
+                ArchiveEntry::File(_) => 1,
+                _ => panic!("{:?}", child),
+            };
+        }
+
+        for _ in 0..(real_children_count * 2) {
             file.write_u32::<LittleEndian>(0)?;
         }
 
+        let pos_after_padding = file.seek(SeekFrom::Current(0))?;
+        let mut padding = pos_after_padding as u32;
+        if padding % container.children_alignment > 0 {
+            padding = container.children_alignment - (padding % container.children_alignment);
+            for _ in 0..padding {
+                file.write_u8(0)?;
+            }
+        }
+
+        let mut all_children = vec![];
         for (id, child) in container.children.iter().enumerate() {
-            let child_starting_addr = file.seek(SeekFrom::Current(0))?;
-            match child {
+            all_children.extend(match child {
                 ArchiveEntry::List { id, files } => self.pack_list(file, id, files)?,
                 ArchiveEntry::ListOfTextures(textures) => self.pack_block(file, textures)?,
                 ArchiveEntry::ListOfEntries(entries) => self.pack_list_of_blocks(file, entries)?,
                 ArchiveEntry::Container(container) => self.pack_container(file, container)?,
+                ArchiveEntry::File(filename) => self.pack_file(file, filename)?,
                 _ => panic!("{:?}", child),
-            };
+            });
 
+            let alignment = container.children_alignment as u64;
             let curr_addr = file.seek(SeekFrom::Current(0))?;
-            if curr_addr % 256 > 0 {
-                let padding = 256 - (curr_addr % 256);
+            if curr_addr % alignment > 0 {
+                let padding = alignment - (curr_addr % alignment);
                 for _ in 0..padding {
                     file.write_u8(0)?;
                 }
@@ -456,15 +492,48 @@ impl Processor {
         }
 
         let cur_pos = file.seek(SeekFrom::Current(0))?;
+
         file.seek(SeekFrom::Start(container_size_addr))?;
         file.write_u32::<LittleEndian>((cur_pos - addr - 256) as u32)?;
+
+        file.seek(SeekFrom::Current(4))?;
+        file.write_u32::<LittleEndian>(all_children.len() as u32)?;
+        file.seek(SeekFrom::Start(child_count_addr))?;
+        file.write_u32::<LittleEndian>(all_children.len() as u32)?;
+
+        file.seek(SeekFrom::Start(children_offsets_addr))?;
+        for c in &all_children {
+            file.write_u32::<LittleEndian>(c.offset as u32 - container.header_size)?;
+        }
+        for c in &all_children {
+            file.write_u32::<LittleEndian>(c.size as u32)?;
+        }
+
         file.seek(SeekFrom::Start(cur_pos))?;
 
-        Ok(())
+        let size_of_block = file.seek(SeekFrom::Current(0))? - addr;
+
+        Ok(vec![ChildData {
+            offset: addr,
+            size: size_of_block,
+        }])
     }
 
-    fn pack_list(&self, file: &mut File, id: &u32, files: &Vec<String>) -> std::io::Result<()> {
+    fn pack_file(&self, file: &mut File, filename: &str) -> std::io::Result<Vec<ChildData>> {
+        let start = file.seek(SeekFrom::Current(0))?;
+        let filename = format!("{}{}", self.root, filename);
+        let data = fs::read(filename)?;
+        file.write(&data)?;
+
+        Ok(vec![ChildData {
+            offset: start,
+            size: data.len() as u64,
+        }])
+    }
+
+    fn pack_list(&self, file: &mut File, id: &u32, files: &Vec<String>) -> std::io::Result<Vec<ChildData>> {
         let addr = file.seek(SeekFrom::Current(0))?;
+        let mut children_data = vec![ChildData { offset: addr, size: 0 }];
 
         let strings = files.iter().map(|name| {
             if let Some(pos) = name.rfind(".") {
@@ -475,17 +544,8 @@ impl Processor {
         }).collect::<Vec<_>>().join(",\r\n");
         write!(file, "{},\r\n", strings)?;
         let padding = file.seek(SeekFrom::Current(0))?;
+        children_data.last_mut().unwrap().size = padding - addr;
 
-        file.seek(SeekFrom::Start(addr - 0xEC))?;
-        file.write_u32::<LittleEndian>(256);
-
-        file.seek(SeekFrom::Start(addr - 0xEC + (files.len() as u64 * 4 + 4)))?;
-        file.write_u32::<LittleEndian>((padding - addr) as u32);
-
-        file.seek(SeekFrom::Start(addr - 0xFC))?;
-        file.write_u32::<LittleEndian>(files.len() as u32 + 1);
-
-        file.seek(SeekFrom::Start(padding))?;
         if padding % 256 > 0 {
             let padding = 256 - (padding % 256);
             for _ in 0..padding {
@@ -493,37 +553,40 @@ impl Processor {
             }
         }
 
+        let files_start = file.seek(SeekFrom::Current(0))?;
+        children_data.push(ChildData {
+            offset: files_start, size: 0
+        });
         for (id, f) in files.iter().enumerate() {
             let filename = format!("{}{}", self.root, f);
             let data = fs::read(filename)?;
-            
-            let f_start = file.seek(SeekFrom::Current(0))?;
             file.write(&data)?;
-            let f_end = file.seek(SeekFrom::Current(0))?;
-
-            let file_offset_offset = addr - 0xEC + (id + 1) as u64 * 4;
-            file.seek(SeekFrom::Start(file_offset_offset))?;
-            file.write_u32::<LittleEndian>((f_start - addr) as u32 + 256);
-            file.seek(SeekFrom::Start(file_offset_offset + 4 + (files.len() as u64 * 4)))?;
-            file.write_u32::<LittleEndian>((f_end - f_start) as u32);
-
-            file.seek(SeekFrom::Start(f_end))?;
         }
+        let files_end = file.seek(SeekFrom::Current(0))?;
+        children_data.last_mut().unwrap().size = files_end - files_start;
 
-        Ok(())
+        Ok(children_data)
     }
 
-    fn pack_list_of_blocks(&self, file: &mut File, entries: &Vec<ArchiveEntry>) -> std::io::Result<()> {
-        for entry in entries {
+    fn pack_list_of_blocks(&self, file: &mut File, entries: &Vec<ArchiveEntry>) -> std::io::Result<Vec<ChildData>> {
+
+        let mut all_children = vec![];
+
+        for (i, entry) in entries.iter().enumerate() {
             match entry {
-                ArchiveEntry::ListOfTextures(textures) => self.pack_block(file, textures)?,
+                ArchiveEntry::ListOfTextures(textures) => {
+                    all_children.extend(self.pack_block(file, textures)?);
+                },
                 _ => panic!(""),
             };
         }
-        Ok(())
+
+        Ok(all_children)
     }
 
-    fn pack_block(&self, file: &mut File, textures: &Vec<Texture>) -> std::io::Result<()> {
+    fn pack_block(&self, file: &mut File, textures: &Vec<Texture>) -> std::io::Result<Vec<ChildData>> {
+        let start_of_block = file.seek(SeekFrom::Current(0))?;
+
         file.write_u32::<LittleEndian>(1)?;
         file.write_u32::<LittleEndian>(1)?;
         file.write_u32::<LittleEndian>(0)?;
@@ -622,11 +685,12 @@ impl Processor {
         file.write_u32::<LittleEndian>(full_size);
 
         file.seek(SeekFrom::Start(data_begin_addr - (512 - 16)))?;
-        let data_begin_addr_mod = 0x100 - (data_begin_addr % 0x100);
-        let cont_size = saved_pos - (data_begin_addr - data_begin_addr_mod);
+        let saved_pos_mod = 0x100 - (saved_pos % 0x100);
+        let cont_size = saved_pos - (data_begin_addr - saved_pos_mod) + 256;
         file.write_u32::<LittleEndian>(cont_size as u32);
 
         file.seek(SeekFrom::Start(saved_pos))?;
+
         if saved_pos % 256 > 0 {
             let padding = 256 - (saved_pos % 256);
             for _ in 0..padding {
@@ -634,7 +698,12 @@ impl Processor {
             }
         }
 
-        Ok(())
+        let size_of_block = file.seek(SeekFrom::Current(0))? - start_of_block;
+
+        Ok(vec![ChildData {
+            offset: start_of_block,
+            size: size_of_block,
+        }])
     }
 }
 
