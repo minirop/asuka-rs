@@ -150,9 +150,8 @@ impl Processor {
         let header = self.read_header(file)?;
         self.display_header(&header, depth);
         let previous_header_size = header.len() * 4;
-        let previous_header_size_and_offset = previous_header_size as u32 + offset;
+        let mut previous_header_size_and_offset = previous_header_size as u32 + offset;
         let header_size = header[3];
-        assert_eq!(previous_header_size as u32, header_size);
 
         let mut header = self.read_header(file)?;
         self.display_header(&header, depth);
@@ -181,9 +180,12 @@ impl Processor {
                 2 => {
                     let mut vec = vec![];
 
-                    for _ in 0..header[1] {
+                    for i in 0..header[1] {
+                        let before = file.seek(SeekFrom::Current(0))?;
                         let child = self.extract_block_2(file, output_file, previous_header_size_and_offset, depth + 1)?;
                         vec.push(child);
+                        let after = file.seek(SeekFrom::Current(0))?;
+                        previous_header_size_and_offset += (after - before) as u32;
                     }
 
                     children.push(ArchiveEntry::ListOfEntries(vec));
