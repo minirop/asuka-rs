@@ -89,6 +89,7 @@ struct Container {
 struct Texture {
     name: String,
     format: DdsFormat,
+    filename: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -339,6 +340,7 @@ impl Processor {
             textures.push(Texture {
                 name: filenames[i].to_string(),
                 format: d3d_to_dds(&dds.get_d3d_format().unwrap()),
+                filename: filenames[i].to_string(),
             });
         }
 
@@ -351,7 +353,9 @@ impl Processor {
                 file.seek(SeekFrom::Start(files_offset[i] as u64))?;
                 let dds = Dds::read(&*file).unwrap();
                 let image = image_from_dds(&dds, 0).unwrap();
-                image.save(&format!("{output_dir}/{output_file}/{}.png", filenames[i])).unwrap();
+                let new_filename = format!("{} ({}x{})", filenames[i], image.width(), image.height());
+                image.save(&format!("{output_dir}/{output_file}/{}.png", new_filename)).unwrap();
+                textures[i].filename = new_filename;
             }
             file.seek(SeekFrom::Start(save))?;
         }
@@ -503,7 +507,7 @@ impl Processor {
 
         file.seek(SeekFrom::Start(children_offsets_addr))?;
         for c in &all_children {
-            file.write_u32::<LittleEndian>(c.offset as u32 - container.header_size)?;
+            file.write_u32::<LittleEndian>((c.offset - child_count_addr + 4) as u32)?;
         }
         for c in &all_children {
             file.write_u32::<LittleEndian>(c.size as u32)?;
@@ -650,7 +654,7 @@ impl Processor {
         for tex in textures {
             let texture_begin_addr = file.seek(SeekFrom::Current(0))?;
 
-            let filename = format!("{}{}.png", self.root, tex.name);
+            let filename = format!("{}{}.png", self.root, tex.filename);
             let img = ImageReader::open(&filename).unwrap().decode().unwrap();
             let img = match img {
                 DynamicImage::ImageRgba8(image) => image,
