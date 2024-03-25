@@ -75,7 +75,7 @@ fn main() -> std::io::Result<()> {
 struct Container {
     format: u32,
     header_size: u32,
-    subheader_size: u32,
+    children_alignment: u32,
     children: Vec<ArchiveEntry>,
 }
 
@@ -123,7 +123,7 @@ impl Processor {
                 };
                 println!("======================= {relative_filename} =======================");
 
-                let container = match self.analyse(&mut file, &format!("{relative_filename}_out"), 0, 0) {
+                let container = match self.extract_container(&mut file, &format!("{relative_filename}_out"), 0, 0) {
                     Ok(c) => c,
                     Err(e) => {
                         println!("{e}");
@@ -146,7 +146,7 @@ impl Processor {
         self.print(depth); println!("{:?}", &header[0..to_show]);
     }
 
-    fn analyse(&self, file: &mut File, output_file: &str, offset: u32, depth: u32) -> std::io::Result<Container> {
+    fn extract_container(&self, file: &mut File, output_file: &str, offset: u32, depth: u32) -> std::io::Result<Container> {
         let header = self.read_header(file)?;
         self.display_header(&header, depth);
         let previous_header_size = header.len() * 4;
@@ -155,8 +155,8 @@ impl Processor {
 
         let mut header = self.read_header(file)?;
         self.display_header(&header, depth);
-        let subheader_size = header[3];
         let format = header[2];
+        let children_alignment = header[3];
         let mut children = vec![];
 
         let child_count = header[1];
@@ -164,8 +164,6 @@ impl Processor {
             let expected_size = (child_count * 2 + 5) as usize;
 
             if header.len() < expected_size {
-                self.print(depth + 1); println!("{child_count} children but size is only {}.", header.len() * 4);
-
                 let expected_size = (child_count * 2 + 5) as usize;
                 while header.len() < expected_size {
                     header.push(file.read_u32::<LittleEndian>()?);
@@ -201,7 +199,7 @@ impl Processor {
                         self.print(depth + 1); println!("{child}: from {:#X} to {:#X}", offset, offset + size);
                         
                         file.seek(SeekFrom::Start((offset) as u64))?;
-                        let child = self.analyse(file, output_file, offset, depth + 1)?;
+                        let child = self.extract_container(file, output_file, offset, depth + 1)?;
                         children.push(ArchiveEntry::Container(child));
                     }
                 },
@@ -214,7 +212,7 @@ impl Processor {
         Ok(Container {
             format,
             header_size,
-            subheader_size,
+            children_alignment,
             children,
         })
     }
@@ -432,7 +430,7 @@ impl Processor {
         file.write_u32::<LittleEndian>(0)?;
         file.write_u32::<LittleEndian>(container.children.len() as u32)?;
         file.write_u32::<LittleEndian>(container.format)?;
-        file.write_u32::<LittleEndian>(container.subheader_size)?;
+        file.write_u32::<LittleEndian>(container.children_alignment)?;
         file.write_u32::<LittleEndian>(0)?;
         for _ in 0..(64 - 5) {
             file.write_u32::<LittleEndian>(0)?;
