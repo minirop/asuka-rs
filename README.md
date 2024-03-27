@@ -9,10 +9,8 @@ _Asuka best girl_
 ## Print the structure of the files in a directory
 
 ```console
-$ asuka <directory> [-m 16]
+$ asuka <directory>
 ```
-
-By default, only show the first 8 integers, but that can be increased with the `-m` parameter.
 
 ## Extract all files from a directory
 
@@ -35,25 +33,25 @@ The directory must contains `metadata.json`.
 ## Header
 
 - 4 bytes: 1
-- 4 bytes: 1
+- 4 bytes: 1 (it has a value of 2 for cameras in `Camera/Action`)
 - 4 bytes: 0
 - 4 bytes: header size
 - 4 bytes: content size
 - (size - 20) bytes: data
-- 4 bytes: 0 // this is the `byte 0` for files offsets
+- 4 bytes: 0 // this is `byte 0`
 - 4 bytes: number of children
 - 4 bytes: type
 - 4 bytes: aligment of children
 - 4 bytes: 0
-- 4 * children bytes: start of children (relative to `byte 0`, hence the first file having an offset of `header size` and not 0)
-- 4 * children bytes: size of children
+- 4 * children bytes: offsets of children (relative to `byte 0`, hence the first offset not being `0`)
+- 4 * children bytes: sizes of children
 - 0x00 until aligment
 
 Note: The end of `data` (most of the time just after `content size`) are the next 3 bytes but backwards (`type`, `number of children`, `0`)
 
 #### Values of "type"
 
-- 0: list of "containers"
+- 0: list of "containers"(?)
 - 1: the first child contains the filenames, the other children are tmd0 files.
 - 2: each children is a container where the first child contains the filenames, the second child contains the files in one block¹ (only DDS files?).
 - 3: same as 1 but with tmo1 files. (except for cameras in `1, 2, 0`)
