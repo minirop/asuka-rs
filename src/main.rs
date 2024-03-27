@@ -170,11 +170,8 @@ impl Processor {
         if child_count > 0 {
             let expected_size = (child_count * 2 + 5) as usize;
 
-            if header.len() < expected_size {
-                let expected_size = (child_count * 2 + 5) as usize;
-                while header.len() < expected_size {
-                    header.push(file.read_u32::<LittleEndian>()?);
-                }
+            while header.len() < expected_size {
+                header.push(file.read_u32::<LittleEndian>()?);
             }
 
             match header[2] {
@@ -195,11 +192,36 @@ impl Processor {
 
                     children.push(ArchiveEntry::ListOfEntries(vec));
                 },
+                5 => {
+                    if header.len() < 2 * child_count as usize + 5 {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Invalid header length? {child_count} children but a size of {:#X}", header.len())));
+                    }
+                    for child in 0..child_count {
+                        let offset = header[(child + 5) as usize] + previous_header_size_and_offset;
+                        let size = header[(child + 5 + child_count) as usize];
+                        self.print(depth + 1); println!("{child}: from {:#X} to {:#X}", offset, offset + size);
+                        
+                        file.seek(SeekFrom::Start((offset) as u64))?;
+                        let magic = file.read_u32::<LittleEndian>()?;
+                        if magic == 1 {
+                            file.seek(SeekFrom::Current(-4))?;
+                            let child = self.extract_container(file, output_file, offset, depth + 1)?;
+                            children.push(ArchiveEntry::Container(child));
+                        } else {
+                            self.print(depth + 2); println!("Unknown child format: {:#X}", magic);
+                            self.extract_file(file, output_file, offset, size, None)?;
+                            children.push(ArchiveEntry::File(format!("{:#X}.bin", offset)));
+                        }
+                    }
+                },
                 6 => {
                     let child = self.extract_block(file, output_file, previous_header_size_and_offset, depth + 1, &header, 6)?;
                     children.push(child);
                 },
-                0 => {
+                0 | 8 => {
+                    if header.len() < child_count as usize + 5 {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Invalid header length? {child_count} children but a size of {:#X}", header.len())));
+                    }
                     for child in 0..child_count {
                         let offset = header[(child + 5) as usize] + previous_header_size_and_offset;
                         let size = header[(child + 5 + child_count) as usize];
@@ -337,9 +359,12 @@ impl Processor {
             file.read(&mut dds_buffer);
             let save = file.seek(SeekFrom::Current(0))?;
             let dds = Dds::read(&*dds_buffer).unwrap();
+            if dds.get_d3d_format().is_none() {
+                self.print(depth + 1); println!("{}: empty D3D, what is dxgi {:?}", filenames[i], dds.get_dxgi_format());
+            }
             textures.push(Texture {
                 name: filenames[i].to_string(),
-                format: d3d_to_dds(&dds.get_d3d_format().unwrap()),
+                format: d3d_to_dds(&dds.get_d3d_format().unwrap_or(D3DFormat::DXT1)),
                 filename: filenames[i].to_string(),
             });
         }
@@ -716,6 +741,7 @@ enum DdsFormat {
     Dxt1,
     Dxt3,
     Dxt5,
+    A8R8G8B8,
 }
 
 fn d3d_to_dds(format: &D3DFormat) -> DdsFormat {
@@ -723,6 +749,7 @@ fn d3d_to_dds(format: &D3DFormat) -> DdsFormat {
         D3DFormat::DXT1 => DdsFormat::Dxt1,
         D3DFormat::DXT3 => DdsFormat::Dxt3,
         D3DFormat::DXT5 => DdsFormat::Dxt5,
+        D3DFormat::A8R8G8B8 => DdsFormat::A8R8G8B8,
         _ => panic!("Unhandled format: {:?}", format),
     }
 }
@@ -732,6 +759,7 @@ fn dds_to_d3d(format: &DdsFormat) -> D3DFormat {
         DdsFormat::Dxt1 => D3DFormat::DXT1,
         DdsFormat::Dxt3 => D3DFormat::DXT1, // image_dds doesn't support DXT3
         DdsFormat::Dxt5 => D3DFormat::DXT5,
+        DdsFormat::A8R8G8B8 => D3DFormat::A8R8G8B8,
     }
 }
 
