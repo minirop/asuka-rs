@@ -74,8 +74,8 @@ fn main() -> std::io::Result<()> {
 
 #[derive(Debug)]
 struct ContainerHeader {
-    size: u32,
     format: u32,
+    size: u32,
     alignment: u32,
     children: Vec<ChildData>,
 }
@@ -148,6 +148,10 @@ impl Processor {
                     },
                 };
                 if let Some(output_dir) = &self.extract {
+                    let ArchiveEntry::Container(container) = container else {
+                        panic!("Root element isn't a container: {:?}", container);
+                    };
+
                     std::fs::create_dir_all(format!("{output_dir}/{relative_filename}_out"))?;
                     let writer = File::create(format!("{output_dir}/{relative_filename}_out/metadata.json"))?;
                     serde_json::to_writer_pretty(writer, &container).unwrap();
