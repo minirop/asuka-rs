@@ -148,6 +148,7 @@ impl Processor {
                     },
                 };
                 if let Some(output_dir) = &self.extract {
+                    std::fs::create_dir_all(format!("{output_dir}/{relative_filename}_out"))?;
                     let writer = File::create(format!("{output_dir}/{relative_filename}_out/metadata.json"))?;
                     serde_json::to_writer_pretty(writer, &container).unwrap();
                 }
@@ -252,10 +253,19 @@ impl Processor {
         let header = self.read_header(file)?;
         self.display_header(&header, depth);
 
-        let filenames = self.read_filenames(file, &header.children[0])?;
-        self.align(file, header.alignment);
+        let filenames = if header.children[0].size > 0 {
+            let fnames = self.read_filenames(file, &header.children[0])?;
+            self.align(file, header.alignment);
+            fnames
+        } else {
+            vec![]
+        };
 
-        let textures = self.extract_block_of_files(file, output_file, depth, Some(filenames))?;
+        let textures = if header.children[1].size > 0 {
+            self.extract_block_of_files(file, output_file, depth, Some(filenames))?
+        } else {
+            vec![]
+        };
 
         Ok(ArchiveEntry::ListOfTextures(textures))
     }
@@ -295,7 +305,10 @@ impl Processor {
         let child_count = file.read_u32::<LittleEndian>()?;
 
         if let Some(ref fnames) = filenames {
-            assert_eq!(child_count, fnames.len() as u32);
+            if child_count != fnames.len() as u32 {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("123")));
+            }
+            //assert_eq!(child_count, fnames.len() as u32);
         }
         assert_eq!(header_length, (child_count + 3) * 4);
 
@@ -436,9 +449,10 @@ impl Processor {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Can't handle '1, {val}, 0' containers ATM, only '1, 1, 0'. At pos {:#X}", self.offset(file) - 8)));
         }
         let val = file.read_u32::<LittleEndian>()?; assert_eq!(val, 0);
-        let size = file.read_u32::<LittleEndian>()?;
+        let mut size = file.read_u32::<LittleEndian>()?;
         if size == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Header size is NULL: {:#X}", self.offset(file) - 4)));
+            size = 256;
+            //return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Header size is NULL: {:#X}", self.offset(file) - 4)));
         }
         
         assert!(size >= 32);

@@ -69,20 +69,3 @@ Note: The end of `data` (most of the time just after `content size`) are the nex
 ## Example
 
 Just open [sk-pbs.txt](sk-pbs.txt) which contains the result of running the tool on all files from Senran Kagura Peach Beach Splash. (not necessarily up to date)
-
-# Files that don't work
-
-All filenames are from `Peach Beach Splash`.
-
-## Empty(?) files
-
-For instance, `Ui/Adv_Illust/adv_ilst_ev0**.cat` starting at `34` (+ `00`). Their header have a size of 0, but the children are 0x100 aligned and filled with `0x00`.
-
-headers are as follow:
-- at `0x0000`: `[1, 1, 0, 256, 768, 2, 1, 0, ...]`
-- at `0x0100`: `[0, 1, 2, 256, 0, 256, 288, 0, ...]`
-    - This says its child is from `0x200` to `0x320`.
-    - But there are also headers at `0x200` and `0x300`.
-- at `0x0200`: `[1, 1, 0, 0, 0, 0, 0, 0, ...]`
-- at `0x0300`: `[0, 2, 0, 256, 0, 256, 256, 0, ...]`
-    - This says it has 2 children both starting at 0x400 with a size of 0 bytes
