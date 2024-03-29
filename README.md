@@ -74,10 +74,6 @@ Just open [sk-pbs.txt](sk-pbs.txt) which contains the result of running the tool
 
 All filenames are from `Peach Beach Splash`.
 
-## corrupted(?) files
-
-For instance, `Motion/Zako/zk**_act_vis.cat`. The 2nd header says it is 256 bytes, but the entire file is 284 bytes. (or maybe I don't parse them correctly)
-
 ## Empty(?) files
 
 For instance, `Ui/Adv_Illust/adv_ilst_ev0**.cat` starting at `34` (+ `00`). Their header have a size of 0, but the children are 0x100 aligned and filled with `0x00`.
