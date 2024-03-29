@@ -232,6 +232,10 @@ impl Processor {
                 1 | 3 | 4 => {
                     children.push(self.extract_list(file, output_file, &header, depth + 1)?);
                 },
+                8 => {
+                    assert_eq!(header.children.len(), 1);
+                    children.push(self.extract_format_8(file, output_file, depth + 1)?);
+                },
                 _ => {
                     for (id, child) in header.children.iter().enumerate() {
                         let offset = child.offset + container_offset;
@@ -274,6 +278,31 @@ impl Processor {
         Ok(ArchiveEntry::ListOfTextures(textures))
     }
 
+    fn extract_format_8(&self, file: &mut File, output_file: &str, depth: u32) -> std::io::Result<ArchiveEntry> {
+        let header = self.read_header(file)?;
+        assert_eq!(header.format, 0);
+        self.display_header(&header, depth);
+
+        let container_offset = self.offset(file);
+
+        // let filenames = self.read_filenames(file, &header.children[0])?;
+
+        let mut children = vec![];
+        for child in header.children {
+            let offset = child.offset + container_offset;
+            let size = child.size;
+            self.extract_file(file, output_file, offset, size, None)?;
+            children.push(ArchiveEntry::File(format!("{:#X}.bin", offset)));
+        }
+
+        Ok(ArchiveEntry::Container(Container {
+            format: header.format,
+            size: header.size,
+            alignment: header.alignment,
+            children,
+        }))
+    }
+
     fn extract_list(&self, file: &mut File, output_file: &str, header: &ContainerHeader, depth: u32) -> std::io::Result<ArchiveEntry> {
         let file_offset = self.offset(file);
 
@@ -310,6 +339,7 @@ impl Processor {
 
         if let Some(ref fnames) = filenames {
             if child_count != fnames.len() as u32 {
+                println!("{child_count} // {:#X}: {:?}", file_pos, filenames);
                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("123")));
             }
             //assert_eq!(child_count, fnames.len() as u32);
