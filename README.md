@@ -69,3 +69,7 @@ Note: The end of `data` (most of the time just after `content size`) are the nex
 ## Example
 
 Just open [sk-pbs.txt](sk-pbs.txt) which contains the result of running the tool on all files from Senran Kagura Peach Beach Splash. (not necessarily up to date)
+
+## DXT1 1-bit alpha
+
+Some transparent files (like swim_blend00_EE in some swimsuits), are using DXT1 with 1-bit alpha. The crate I use don't support this so you'll need to edit metadata.json to set them to DXT5 otherwise you'll get pitch black clothes.
