@@ -144,6 +144,9 @@ impl Processor {
                     Err(e) => {
                         println!("{e}");
                         eprintln!("{relative_filename}: {e}");
+                        if let Some(output_dir) = &self.extract {
+                            fs::remove_dir_all(format!("{output_dir}/{relative_filename}_out"))?;
+                        }
                         continue;
                     },
                 };
@@ -396,7 +399,9 @@ impl Processor {
             let save = file.seek(SeekFrom::Current(0))?;
             for (i, texture) in textures.iter_mut().enumerate() {
                 file.seek(SeekFrom::Start(children[i].offset))?;
-                let dds = Dds::read(&*file).unwrap();
+                let mut buffer = vec![0u8; children[i].size as usize];
+                file.read(&mut buffer)?;
+                let dds = Dds::read(&*buffer).unwrap();
                 let image = image_from_dds(&dds, 0).unwrap();
                 let new_filename = format!("{} ({}x{})", texture.filename, image.width(), image.height());
                 image.save(&format!("{output_dir}/{output_file}/{}.png", new_filename)).unwrap();
@@ -886,7 +891,11 @@ pub fn dds_from_image(
         D3DFormat::DXT1 => ImageFormat::BC1RgbaUnormSrgb,
         D3DFormat::DXT3 => ImageFormat::BC2RgbaUnormSrgb,
         D3DFormat::DXT5 => ImageFormat::BC3RgbaUnormSrgb,
-        _ => unimplemented!(),
+        D3DFormat::A8R8G8B8 => ImageFormat::Rgba8UnormSrgb,
+        _ => {
+            println!("{:?}", format);
+            unimplemented!();
+        },
     };
     SurfaceRgba8::from_image(image)
         .encode(other_format, Quality::Normal, Mipmaps::Disabled)?
