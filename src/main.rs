@@ -471,8 +471,10 @@ impl Processor {
         if alignment > 0 {
             let alignment = alignment as u64;
             let cur_pos = file.seek(SeekFrom::Current(0)).unwrap();
-            let cur_pos = (alignment - (cur_pos % alignment)) as i64;
-            file.seek(SeekFrom::Current(cur_pos)).unwrap();
+            if (cur_pos % alignment) != 0 {
+                let cur_pos = (alignment - (cur_pos % alignment)) as i64;
+                file.seek(SeekFrom::Current(cur_pos)).unwrap();
+            }
         } else {
             println!("Alignement is NULL");
         }
