@@ -74,6 +74,7 @@ fn main() -> std::io::Result<()> {
 
 #[derive(Debug)]
 struct ContainerHeader {
+    version: u32,
     format: u32,
     size: u32,
     alignment: u32,
@@ -82,6 +83,7 @@ struct ContainerHeader {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Container {
+    version: u32,
     format: u32,
     size: u32,
     alignment: u32,
@@ -109,11 +111,12 @@ struct Processor {
     root: String,
 }
 
-use phf::{phf_map};
+use phf::phf_map;
 
 static FILE_FORMATS: phf::Map<u32, &'static str> = phf_map! {
-    0x746D6430u32 => "tmd0",
     0x61303031u32 => "a001",
+    0x746D6430u32 => "tmd0",
+    0x746D6F31u32 => "tmo1",
 };
 
 impl Processor {
@@ -127,25 +130,29 @@ impl Processor {
             let fpath = filepath?;
             if fpath.file_type()?.is_dir() {
                 self.process_files_in_dir(fpath.path().to_str().unwrap())?;
-            } else if fpath.path().to_str().unwrap().ends_with(".cat") {
-                let filename = fpath.path().to_str().unwrap().to_string();
-                let mut file = File::open(&filename)?;
+                continue;
+            }
 
-                let relative_filename = if filename.starts_with(&self.root) {
-                    let start_pos = self.root.len();
-                    &filename[start_pos..]
-                } else {
-                    &filename
-                };
-                println!("======================= {relative_filename} =======================");
+            let filename = fpath.path().to_str().unwrap().to_string();
+            let mut file = File::open(&filename)?;
+            let relative_filename = if filename.starts_with(&self.root) {
+                let start_pos = self.root.len();
+                &filename[start_pos..]
+            } else {
+                &filename
+            };
 
+            println!("======================= {relative_filename} =======================");
+            let pname = fpath.path();
+            let fname = pname.to_str().unwrap();
+            if fname.ends_with(".cat") {
                 let container = match self.extract_container(&mut file, &format!("{relative_filename}_out"), 0) {
                     Ok(c) => c,
                     Err(e) => {
                         println!("{e}");
                         eprintln!("{relative_filename}: {e}");
                         if let Some(output_dir) = &self.extract {
-                            fs::remove_dir_all(format!("{output_dir}/{relative_filename}_out"))?;
+                            let _ = fs::remove_dir_all(format!("{output_dir}/{relative_filename}_out"));
                         }
                         continue;
                     },
@@ -158,6 +165,14 @@ impl Processor {
                     std::fs::create_dir_all(format!("{output_dir}/{relative_filename}_out"))?;
                     let writer = File::create(format!("{output_dir}/{relative_filename}_out/metadata.json"))?;
                     serde_json::to_writer_pretty(writer, &container).unwrap();
+                }
+            } else if fname.ends_with(".gxt") {
+                if let Some(output_dir) = &self.extract {
+                    let textures = self.extract_block_of_files(&mut file, &format!("{relative_filename}_out"), 0, None)?;
+
+                    std::fs::create_dir_all(format!("{output_dir}/{relative_filename}_out"))?;
+                    let writer = File::create(format!("{output_dir}/{relative_filename}_out/metadata.json"))?;
+                    serde_json::to_writer_pretty(writer, &textures).unwrap();
                 }
             }
         }
@@ -178,52 +193,57 @@ impl Processor {
             let container_offset = self.offset(file);
             match header.format {
                 0 => {
-                    // the separating isn't strictly necessary, it's just to try to understand why different values
-                    match (header.size, header.alignment) {
-                        (256, 256) => {
-                            for child in header.children.iter() {
-                                let offset = child.offset + container_offset;
-                                file.seek(SeekFrom::Start(offset))?;
-                                children.push(self.extract_container(file, output_file, depth + 1)?);
-                            }
-                        },
-                        (32, 16) => {
-                            for (id, child) in header.children.iter().enumerate() {
-                                let offset = child.offset + container_offset;
-                                let size = child.size;
-
-                                file.seek(SeekFrom::Start(offset))?;
-                                // BigEndian so textual magic is left to right
-                                let magic = file.read_u32::<BigEndian>()?;
-                                file.seek(SeekFrom::Current(-4))?;
-                                match magic {
-                                    0x01000000 => {
-                                        children.push(self.extract_container(file, output_file, depth + 1)?);
-                                    },
-                                    _ => {
-                                        let ext = if FILE_FORMATS.contains_key(&magic) {
-                                            FILE_FORMATS[&magic]
-                                        } else {
-                                            "bin"
-                                        };
-                                        let fileformat = format!("{:#X}.{ext}", offset);
-
-                                        self.print(depth + 1); println!("{id}: from {:#X} to {:#X}", offset, offset + size);
-                                        let magic_vec = self.extract_file(file, output_file, offset, size, Some(fileformat.clone()))?;
-                                        if FILE_FORMATS.contains_key(&magic) {
-                                            self.print(depth + 2); println!("{:?}", magic_vec);
-                                        } else {
-                                            self.print(depth + 2); println!("{}", fileformat);
-                                        };
-                                        children.push(ArchiveEntry::File(fileformat));
-                                    },
+                    if header.children.len() == 2 { // hack?
+                        file.seek(SeekFrom::Start(0))?;
+                        children.push(self.extract_format_2(file, output_file, depth + 1)?);
+                    } else {
+                        // the separating isn't strictly necessary, it's just to try to understand why different values
+                        match (header.size, header.alignment) {
+                            (256, 256) => {
+                                for child in header.children.iter() {
+                                    let offset = child.offset + container_offset;
+                                    file.seek(SeekFrom::Start(offset))?;
+                                    children.push(self.extract_container(file, output_file, depth + 1)?);
                                 }
-                            }
-                        },
-                        _ => {
-                            panic!("Unhandled header inside {output_file}: {}, {}", header.size, header.alignment);
-                        },
-                    };
+                            },
+                            (_, 16) => {
+                                for (id, child) in header.children.iter().enumerate() {
+                                    let offset = child.offset + container_offset;
+                                    let size = child.size;
+
+                                    file.seek(SeekFrom::Start(offset))?;
+                                    // BigEndian so textual magic is left to right
+                                    let magic = file.read_u32::<BigEndian>()?;
+                                    file.seek(SeekFrom::Current(-4))?;
+                                    match magic {
+                                        0x01000000 => {
+                                            children.push(self.extract_container(file, output_file, depth + 1)?);
+                                        },
+                                        _ => {
+                                            let ext = if FILE_FORMATS.contains_key(&magic) {
+                                                FILE_FORMATS[&magic]
+                                            } else {
+                                                "bin"
+                                            };
+                                            let fileformat = format!("{:#X}.{ext}", offset);
+
+                                            self.print(depth + 1); println!("{id}: from {:#X} to {:#X}", offset, offset + size);
+                                            let magic_vec = self.extract_file(file, output_file, offset, size, Some(fileformat.clone()))?;
+                                            if FILE_FORMATS.contains_key(&magic) {
+                                                self.print(depth + 2); println!("{:?}", magic_vec);
+                                            } else {
+                                                self.print(depth + 2); println!("{}", fileformat);
+                                            };
+                                            children.push(ArchiveEntry::File(fileformat));
+                                        },
+                                    }
+                                }
+                            },
+                            _ => {
+                                panic!("Unhandled header inside {output_file}: {}, {}", header.size, header.alignment);
+                            },
+                        };
+                    }
                 },
                 2 => {
                     for child in header.children.iter() {
@@ -253,6 +273,7 @@ impl Processor {
         }
 
         Ok(ArchiveEntry::Container(Container {
+            version: header.version,
             format: header.format,
             size: header.size,
             alignment: header.alignment,
@@ -299,6 +320,7 @@ impl Processor {
         }
 
         Ok(ArchiveEntry::Container(Container {
+            version: header.version,
             format: header.format,
             size: header.size,
             alignment: header.alignment,
@@ -341,15 +363,15 @@ impl Processor {
         let child_count = file.read_u32::<LittleEndian>()?;
 
         if let Some(ref fnames) = filenames {
-            if child_count != fnames.len() as u32 {
-                println!("{child_count} // {:#X}: {:?}", file_pos, filenames);
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("123")));
-            }
-            //assert_eq!(child_count, fnames.len() as u32);
+            assert_eq!(child_count, fnames.len() as u32);
         }
         assert_eq!(header_length, (child_count + 3) * 4);
 
         let content_length = file.read_u32::<LittleEndian>()?;
+
+        if content_length == header_length {
+            return Ok(vec![]);
+        }
 
         let first_pos = file_pos + (header_length + file.read_u32::<LittleEndian>()?) as u64;
         let mut children = vec![ChildData { offset: first_pos, size: 0 }];
@@ -424,7 +446,7 @@ impl Processor {
         file.read(&mut buffer)?;
 
         let Ok(strings) = String::from_utf8(buffer) else {
-            panic!("offset: {:#X}", offset);
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Should have been a string but got something else (unsupported format?). At pos {:#X}", strings_start)));
         };
 
         let filenames: Vec<_> = strings.split(",").map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect();
@@ -483,17 +505,14 @@ impl Processor {
     fn read_header(&self, file: &mut File) -> std::io::Result<ContainerHeader> {
         let mut children = vec![];
         
+        self.pos(file);
         // part one
         let val = file.read_u32::<LittleEndian>()?; assert_eq!(val, 1);
-        let val = file.read_u32::<LittleEndian>()?;
-        if val != 1 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Can't handle '1, {val}, 0' containers ATM, only '1, 1, 0'. At pos {:#X}", self.offset(file) - 8)));
-        }
+        let version = file.read_u32::<LittleEndian>()?; // version?
         let val = file.read_u32::<LittleEndian>()?; assert_eq!(val, 0);
         let mut size = file.read_u32::<LittleEndian>()?;
         if size == 0 {
             size = 256;
-            //return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Header size is NULL: {:#X}", self.offset(file) - 4)));
         }
         
         assert!(size >= 32);
@@ -525,6 +544,7 @@ impl Processor {
         }
 
         Ok(ContainerHeader {
+            version,
             size,
             format,
             alignment,
@@ -550,7 +570,7 @@ impl Processor {
         let addr = file.seek(SeekFrom::Current(0))?;
 
         file.write_u32::<LittleEndian>(1)?;
-        file.write_u32::<LittleEndian>(1)?;
+        file.write_u32::<LittleEndian>(container.version)?;
         file.write_u32::<LittleEndian>(0)?;
         file.write_u32::<LittleEndian>(container.size)?;
         let container_size_addr = file.seek(SeekFrom::Current(0))?;

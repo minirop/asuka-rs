@@ -1,6 +1,25 @@
 ![Asuka's face](images/face.png) ![Asuka's name](images/name.png)
 
-A tool to help analyse .cat from the Senran Kagura series.
+A tool to help analyse .cat from the Tamsoft Engine. Can extract/repack some and convert `.gxt` to `.png`.
+
+Games supported¹:
+
+* Hyperdimension Neptunia U: Action Unleashed
+* MegaTagmension Blanc + Neptune VS Zombies
+* Neptunia x SENRAN KAGURA: Ninja Wars
+* Onechanbara Z2: Chaos
+* Onee Chanbara Origin
+* SENRAN KAGURA Burst Re:Newal
+* SENRAN KAGURA ESTIVAL VERSUS
+* SENRAN KAGURA Peach Ball
+* SENRAN KAGURA Peach Beach Splash
+* SENRAN KAGURA Reflexions
+
+Not tested:
+
+* SENRAN KAGURA SHINOVI VERSUS
+
+¹: because the format isn't fully understood, some archives might not extract or not properly.
 
 _Asuka best girl_
 
