@@ -25,19 +25,17 @@ _Asuka best girl_
 
 # Usage
 
-## Print the structure of the files in a directory
+## Print the structure of a file
 
 ```console
-$ asuka <directory>
+$ asuka <file>
 ```
 
-## Extract all files from a directory
+## Extract a file
 
 ```console
-$ asuka <directory> -e <output_directory>
+$ asuka <file> -e <output_directory>
 ```
-
-This will retain the full directory structure.
 
 ## Pack a directory into a .cat file
 
@@ -79,15 +77,11 @@ Note: The end of `data` (most of the time just after `content size`) are the nex
     - if 1 or 2, looks like scripts?
     - if 3, names then 2 navmesh
     - if 4, names then starting by [3, 0, 0, 0], also scripts?
-- 6: the first child contains the filenames, the second child contains the files in one block¹ (only DDS files? only in `effects/`)
+- 6: the first child contains the filenames, the second child contains the files in one block¹ (only DDS files?)
 - 7: same as 1 but with unknown files.
 - 8: Same as 2, but contains 2 files: mtl.csv and <model>.bin.
 
 ¹: a block start with the size of its header, the number of files, its size, then the offsets (relative to the start of the block)
-
-## Example
-
-Just open [sk-pbs.txt](sk-pbs.txt) which contains the result of running the tool on all files from Senran Kagura Peach Beach Splash. (not necessarily up to date)
 
 ## DXT1 1-bit alpha
 
