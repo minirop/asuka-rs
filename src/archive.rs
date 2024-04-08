@@ -178,7 +178,7 @@ impl CatFileReader {
                 std::fs::create_dir_all(output_dir)?;
                 image.save(&format!("{output_dir}/{filename}")).unwrap();
             } else {
-                println!("{id}: {filename}");
+                println!("{id}: {filename} {:?}", image_data);
             }
 
             textures.push(Texture {
@@ -203,7 +203,7 @@ impl CatFileReader {
                 std::fs::create_dir_all(output_dir)?;
                 self.extract_file(child, &format!("{output_dir}/{filename}"))?;
             } else {
-                println!("{id}: {filename}");
+                println!("{id}: {filename} {:?}", child);
             }
 
             files.push(filename);
@@ -252,7 +252,7 @@ impl CatFileReader {
                         std::fs::create_dir_all(output_dir)?;
                         image.save(&format!("{output_dir}/{filename}")).unwrap();
                     } else {
-                        println!("{id}: {filename}");
+                        println!("{id}: {filename} {:?}", images_data[id]);
                     }
 
                     textures.push(Texture {
@@ -334,6 +334,8 @@ impl CatFileReader {
 
     fn read_header(&mut self) -> std::io::Result<ContainerHeader> {
         let mut children = vec![];
+
+        let header_addr = self.get_offset();
         
         // part one
         let val = self.input.read_u32::<LittleEndian>()?; assert_eq!(val, 1);
@@ -383,7 +385,7 @@ impl CatFileReader {
             children,
         };
         if self.output.is_none() {
-            println!("{:?}", header);
+            println!("{:#X}: {:?}", header_addr, header);
         }
 
         Ok(header)
@@ -511,14 +513,25 @@ impl CatFileWriter {
                 self.pack_format_1(start_of_container, &container)?;
             },
             2 => {
-                let child_start = self.get_offset();
-                let relative_child_start = (child_start - start_of_container) as u32 - container.size;
-                self.write_at(start_of_children_offsets, relative_child_start);
+                let mut children_data = vec![];
 
-                self.pack_format_2(container)?;
+                for child in container.children.iter() {
+                    let start_of_child = self.get_offset();
+                    let relative_start_of_child = start_of_child - start_of_container - container.alignment as u64;
 
-                let child_size = self.get_offset() - child_start;
-                self.write_at(start_of_children_sizes, child_size as u32);
+                    self.pack_format_2(child)?;
+
+                    let child_size = self.get_offset() - start_of_child;
+
+                    children_data.push(ChildData {
+                        offset: relative_start_of_child,
+                        size: child_size,
+                    });
+
+                    self.align(container.alignment);
+                }
+
+                self.updade_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
             },
             8 => {
                 let child_start = self.get_offset();
@@ -542,6 +555,7 @@ impl CatFileWriter {
 
     fn pack_format_1(&mut self, start_of_container: u64, container: &Container) -> std::io::Result<()> {
         assert_eq!(container.children.len(), 1);
+        self.write_at(start_of_container + 0x18, 2);
         self.write_at(start_of_container + 0x104, 2);
 
         let start_of_children_offsets = start_of_container + container.size as u64 + 20;
@@ -589,73 +603,80 @@ impl CatFileWriter {
         Ok(())
     }
 
-    fn pack_format_2(&mut self, container: &Container) -> std::io::Result<()> {
-        for child in container.children.iter() {
-            match child {
-                ArchiveEntry::Textures(textures) => {
-                    let start_of_container = self.get_offset();
-                    let start_of_children_offsets = start_of_container + 256 + 20;
-                    let mut children_data = vec![];
+    fn pack_format_2(&mut self, child: &ArchiveEntry) -> std::io::Result<()> {
+        match child {
+            ArchiveEntry::Textures(textures) => {
+                let start_of_container = self.get_offset();
+                let start_of_children_offsets = start_of_container + 256 + 20;
+                let mut children_data = vec![];
 
-                    self.write_header(1, 0, 256, 256, 2)?;
+                self.write_header(1, 0, 256, 256, 2)?;
 
-                    let names = textures.iter().map(|tex| tex.name.clone()).collect::<Vec<_>>().join(",\r\n");
-                    let names = format!("{names},\r\n");
-                    
-                    let relative_start_of_names = self.get_offset() - start_of_container - 256;
-                    children_data.push(ChildData {
-                        offset: relative_start_of_names,
-                        size: names.len() as u64,
-                    });
+                let names = textures.iter().map(|tex| tex.name.clone()).collect::<Vec<_>>().join(",\r\n");
+                let names = format!("{names},\r\n");
+                
+                let relative_start_of_names = self.get_offset() - start_of_container - 256;
+                children_data.push(ChildData {
+                    offset: relative_start_of_names,
+                    size: names.len() as u64,
+                });
 
-                    write!(self.output, "{}", names)?;
-                    self.align(container.alignment);
+                write!(self.output, "{}", names)?;
+                self.align(256);
 
-                    let start_of_image_block = self.get_offset();
+                let start_of_image_block = self.get_offset();
 
-                    let tex_count = textures.len() as u32;
-                    self.output.write_u32::<LittleEndian>(12 + 4 * tex_count)?;
-                    self.output.write_u32::<LittleEndian>(tex_count)?;
-                    self.output.write_u32::<LittleEndian>(0x42424242)?;
-                    for _ in 0..textures.len() {
-                        self.output.write_u32::<LittleEndian>(0x0)?;
-                    }
+                let tex_count = textures.len() as u32;
+                self.output.write_u32::<LittleEndian>(12 + 4 * tex_count)?;
+                self.output.write_u32::<LittleEndian>(tex_count)?;
+                self.output.write_u32::<LittleEndian>(0x42424242)?;
+                for _ in 0..textures.len() {
+                    self.output.write_u32::<LittleEndian>(0x0)?;
+                }
 
-                    for texture in textures {
-                        let filename = format!("{}{}", self.root, texture.filename);
-                        let img = ImageReader::open(&filename).unwrap().decode().unwrap();
-                        let img = match img {
-                            DynamicImage::ImageRgba8(image) => image,
-                            DynamicImage::ImageRgb8(image) => {
-                                let rgba_image: RgbaImage = image.convert();
-                                rgba_image
-                            },
-                            _ => panic!("{} is not a RGB(A) image: {:?}", filename, img),
-                        };
+                let start_of_block_offsets = self.get_offset();
+                let mut children_offsets = vec![];
 
-                        let dds = texture::dds_from_image(&img, &texture.format).unwrap();
-                        dds.write(&mut self.output).unwrap();
-                    }
-                    
-                    let size_of_content_block = self.get_offset() - start_of_image_block;
-                    self.write_at(start_of_image_block + 8, size_of_content_block as u32);
+                for texture in textures {
+                    children_offsets.push(self.get_offset() - start_of_block_offsets);
 
-                    self.align(container.alignment);
+                    let filename = format!("{}{}", self.root, texture.filename);
+                    let img = ImageReader::open(&filename).unwrap().decode().unwrap();
+                    let img = match img {
+                        DynamicImage::ImageRgba8(image) => image,
+                        DynamicImage::ImageRgb8(image) => {
+                            let rgba_image: RgbaImage = image.convert();
+                            rgba_image
+                        },
+                        _ => panic!("{} is not a RGB(A) image: {:?}", filename, img),
+                    };
 
-                    let relative_start_of_image_block = start_of_image_block - start_of_container - 256;
-                    children_data.push(ChildData {
-                        offset: relative_start_of_image_block,
-                        size: size_of_content_block,
-                    });
+                    let dds = texture::dds_from_image(&img, &texture.format).unwrap();
+                    dds.write(&mut self.output).unwrap();
+                }
+                
+                let size_of_content_block = self.get_offset() - start_of_image_block;
+                self.write_at(start_of_image_block + 8, size_of_content_block as u32);
 
-                    let container_size = (self.get_offset() - start_of_container) as u32 - container.size;
-                    self.write_at(start_of_container + 16, container_size);
+                for (id, offset) in children_offsets.iter().enumerate() {
+                    self.write_at(start_of_image_block + 12 + (id as u64 * 4), *offset as u32);
+                }
 
-                    self.updade_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
-                },
-                _ => panic!("Unsupported child: {:?}", child),
-            };
-        }
+                self.align(256);
+
+                let relative_start_of_image_block = start_of_image_block - start_of_container - 256;
+                children_data.push(ChildData {
+                    offset: relative_start_of_image_block,
+                    size: size_of_content_block,
+                });
+
+                let container_size = (self.get_offset() - start_of_container) as u32 - 256;
+                self.write_at(start_of_container + 16, container_size);
+
+                self.updade_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
+            },
+            _ => panic!("Unsupported child: {:?}", child),
+        };
 
         Ok(())
     }
@@ -756,6 +777,8 @@ impl CatFileWriter {
     }
 
     fn updade_children_offsets_and_sizes(&mut self, pos: u64, children: Vec<ChildData>) -> std::io::Result<()> {
+        println!("{:#X}: {:?}", pos, children);
+
         let orig = self.get_offset();
         self.goto(pos);
 
