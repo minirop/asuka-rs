@@ -531,7 +531,7 @@ impl CatFileWriter {
                     self.align(container.alignment);
                 }
 
-                self.updade_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
+                self.update_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
             },
             8 => {
                 let child_start = self.get_offset();
@@ -595,7 +595,7 @@ impl CatFileWriter {
                     self.align(container.alignment);
                 }
 
-                self.updade_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
+                self.update_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
             },
             _ => panic!("Unsupported child: {:?}", child),
         };
@@ -673,7 +673,7 @@ impl CatFileWriter {
                 let container_size = (self.get_offset() - start_of_container) as u32 - 256;
                 self.write_at(start_of_container + 16, container_size);
 
-                self.updade_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
+                self.update_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
             },
             _ => panic!("Unsupported child: {:?}", child),
         };
@@ -729,7 +729,7 @@ impl CatFileWriter {
                 let container_size = (self.get_offset() - start_of_container) as u32 - container.size;
                 self.write_at(start_of_container + 16, container_size);
 
-                self.updade_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
+                self.update_children_offsets_and_sizes(start_of_children_offsets, children_data)?;
             },
             _ => panic!("Unsupported child: {:?}", child),
         };
@@ -776,9 +776,7 @@ impl CatFileWriter {
         self.output.seek(SeekFrom::Start(pos)).unwrap();
     }
 
-    fn updade_children_offsets_and_sizes(&mut self, pos: u64, children: Vec<ChildData>) -> std::io::Result<()> {
-        println!("{:#X}: {:?}", pos, children);
-
+    fn update_children_offsets_and_sizes(&mut self, pos: u64, children: Vec<ChildData>) -> std::io::Result<()> {
         let orig = self.get_offset();
         self.goto(pos);
 
