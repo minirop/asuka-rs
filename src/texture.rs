@@ -24,6 +24,7 @@ pub enum PixelFormat {
     Bgra8Unorm,
     BC1RgbaUnorm,
     BC1RgbaUnormSrgb,
+    BC2RgbaUnorm,
     BC3RgbaUnorm,
     BC3RgbaUnormSrgb,
     BC7RgbaUnorm,
@@ -57,6 +58,7 @@ fn compression_to_d3d(format: &Compression) -> D3DFormat {
 fn image_to_pixel_format(image: &ImageFormat) -> PixelFormat {
     match image {
         ImageFormat::BC1RgbaUnorm => PixelFormat::BC1RgbaUnorm,
+        ImageFormat::BC2RgbaUnorm => PixelFormat::BC2RgbaUnorm,
         ImageFormat::BC3RgbaUnorm => PixelFormat::BC3RgbaUnorm,
         ImageFormat::Bgra8Unorm => PixelFormat::Bgra8Unorm,
         _ => panic!("Unsupported image format: {:?}", image),
@@ -66,9 +68,12 @@ fn image_to_pixel_format(image: &ImageFormat) -> PixelFormat {
 fn pixel_to_image_format(pixels: &PixelFormat) -> ImageFormat {
     match pixels {
         PixelFormat::BC1RgbaUnorm => ImageFormat::BC1RgbaUnorm,
+        PixelFormat::BC1RgbaUnormSrgb => ImageFormat::BC1RgbaUnormSrgb,
+        PixelFormat::BC2RgbaUnorm => ImageFormat::BC2RgbaUnorm,
         PixelFormat::BC3RgbaUnorm => ImageFormat::BC3RgbaUnorm,
+        PixelFormat::BC3RgbaUnormSrgb => ImageFormat::BC3RgbaUnormSrgb,
+        PixelFormat::BC7RgbaUnorm => ImageFormat::BC7RgbaUnorm,
         PixelFormat::Bgra8Unorm => ImageFormat::Bgra8Unorm,
-        _ => panic!("Unsupported pixel format: {:?}", pixels),
     }
 }
 

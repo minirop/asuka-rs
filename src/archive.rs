@@ -1,3 +1,6 @@
+use crate::texture::PixelFormat;
+use crate::Compression;
+use crate::TextureFormat;
 use crate::texture::HeaderConverter;
 use crate::texture;
 use image_dds::image::buffer::ConvertBuffer;
@@ -131,7 +134,7 @@ impl CatFileReader {
             6 =>{
                 assert_eq!(header.children.len(), 2);
 
-                children.push(self.unpack_format_6()?);
+                children.push(self.unpack_format_6(&header)?);
             },
             8 => {
                 assert_eq!(header.children.len(), 1);
@@ -222,27 +225,55 @@ impl CatFileReader {
 
         assert_eq!(header.format, 0);
         assert_eq!(header.children.len(), 2);
+        
+        self.unpack_strings_then_images(&header)
+    }
 
+    fn unpack_format_6(&mut self, header: &ContainerHeader) -> std::io::Result<ArchiveEntry> {
+        self.unpack_strings_then_images(header)
+    }
+
+    fn unpack_strings_then_images(&mut self, header: &ContainerHeader) -> std::io::Result<ArchiveEntry> {
         let strings = &header.children[0];
         let images = &header.children[1];
 
         let strings = self.read_strings(strings.offset, strings.size);
 
         self.input.seek(SeekFrom::Start(images.offset))?;
-        let magic = self.peek_u32_be();
 
         let mut textures = vec![];
+
+        let magic = self.peek_u32_be();
         match magic {
             GNF => {
                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("GNF Textures are not supported")));
             },
             _ => {
                 let images_data = self.unpack_block(images.offset)?;
-
                 for (id, name) in strings.iter().enumerate() {
                     let image = &images_data[id];
                     let mut buffer = vec![0u8; image.size as usize];
                     self.input.read(&mut buffer)?;
+
+                    // some modders put PNG instead of DDS
+                    if &buffer[0..4] == [0x89, 0x50, 0x4E, 0x47] {
+                        let filename = format!("{name} ({:#X}).png", self.get_offset());
+
+                        if let Some(output_dir) = &self.output {
+                            std::fs::create_dir_all(output_dir)?;
+                            std::fs::write(format!("{output_dir}/{filename}"), buffer)?;
+                        }
+
+                        textures.push(Texture {
+                            name: name.clone(),
+                            format: TextureFormat::D3DFormat(Compression::Dxt5, PixelFormat::BC3RgbaUnorm),
+                            filename,
+                        });
+                        continue;
+                    } else if &buffer[0..4] != [0x44, 0x44, 0x53, 0x20] {
+                        panic!("{:?}", &buffer[0..4]);
+                    }
+
                     let dds = Dds::read(&*buffer).unwrap();
                     let image = image_from_dds(&dds, 0).unwrap();
                     let filename = format!("{name} ({}x{}).png", image.width(), image.height());
@@ -262,14 +293,9 @@ impl CatFileReader {
                     });
                 }
             }
-        };
+        }
 
         Ok(ArchiveEntry::Textures(textures))
-    }
-
-    fn unpack_format_6(&self) -> std::io::Result<ArchiveEntry> {
-        todo!();
-        //Ok(ArchiveEntry::Textures(vec![]))
     }
 
     fn unpack_format_8(&mut self) -> std::io::Result<ArchiveEntry> {
@@ -414,6 +440,7 @@ impl CatFileReader {
         val
     }
 
+    #[allow(unused)]
     fn peek_u32_be(&mut self) -> u32 {
         let val = self.input.read_u32::<BigEndian>().unwrap();
         self.input.seek(SeekFrom::Current(-4)).unwrap();
@@ -809,6 +836,7 @@ impl CatFileWriter {
 
 #[allow(unused)]
 pub const A001: u32 = 0x61303031u32;
+#[allow(unused)]
 pub const GNF : u32 = 0x474E4620u32;
 #[allow(unused)]
 pub const TMD0: u32 = 0x746D6430u32;

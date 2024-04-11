@@ -81,8 +81,8 @@ Note: The end of `data` (most of the time just after `content size`) are the nex
 - 7: same as 1 but with unknown files.
 - 8: Same as 2, but contains 2 files: mtl.csv and <model>.bin.
 
-¹: a block start with the size of its header, the number of files, its size, then the offsets (relative to the start of the block)
+¹: a block starts with the size of its header, the number of files, its size, then the offsets (relative to the start of the block)
 
 ## DXT1 1-bit alpha
 
-Some transparent files (like swim_blend00_EE in some swimsuits), are using DXT1 with 1-bit alpha. The crate I use don't support this so you'll need to edit metadata.json to set them to DXT5 otherwise you'll get pitch black clothes.
+Some transparent files (like swim_blend00_EE in some swimsuits), are using DXT1 with 1-bit alpha. The crate I use doesn't support this so you'll need to edit metadata.json to set them to DXT5 otherwise you'll get pitch black clothes.
