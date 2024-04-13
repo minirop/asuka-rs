@@ -88,13 +88,18 @@ impl CatFileReader {
 
         match header.format {
             0 => match (header.size, header.alignment) {
-                (64, 64) => {
-                    for child in &header.children {
+                (64, 64) | (32, 16) => {
+                    for (id, child) in header.children.iter().enumerate() {
                         self.input.seek(SeekFrom::Start(child.offset))?;
-                        let val = self.peek_u32();
-                        assert_eq!(val, 0);
 
-                        children.push(ArchiveEntry::File(format!("{:#X}.bin", child.size)));
+                        if let Some(output_dir) = &self.output {
+                            std::fs::create_dir_all(output_dir)?;
+                            self.extract_file(child, &format!("{output_dir}/{:#X}.bin", child.offset))?;
+                        } else {
+                            println!("{id}: {:?}", child);
+                        }
+                        
+                        children.push(ArchiveEntry::File(format!("{:#X}.bin", child.offset)));
                     }
                 },
                 _ => {
@@ -113,7 +118,7 @@ impl CatFileReader {
                     }
                 }
             },
-            1 => {
+            1 | 3 | 4 => {
                 children.push(self.unpack_format_1(&header)?);
             },
             2 => {
@@ -333,7 +338,7 @@ impl CatFileReader {
         let mut block_start = self.input.seek(SeekFrom::Start(offset))?;
 
         // arbitrary size
-        if self.peek_u32() > 0xFF {
+        if self.peek_u32() > 0xFFFF {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Block without a header is not supported, at pos {:#X}.", self.get_offset())));
         }
 
@@ -536,7 +541,7 @@ impl CatFileWriter {
                     self.write_at(start_of_children_sizes + id as u64 * 4, child_size as u32);
                 }
             },
-            1 => {
+            1 | 3 | 4 => {
                 self.pack_format_1(start_of_container, &container)?;
             },
             2 => {
