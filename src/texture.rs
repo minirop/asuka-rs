@@ -28,6 +28,8 @@ pub enum PixelFormat {
     BC3RgbaUnorm,
     BC3RgbaUnormSrgb,
     BC7RgbaUnorm,
+    BC7RgbaUnormSrgb,
+    BC6hRgbUfloat,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -73,7 +75,9 @@ fn pixel_to_image_format(pixels: &PixelFormat) -> ImageFormat {
         PixelFormat::BC3RgbaUnorm => ImageFormat::BC3RgbaUnorm,
         PixelFormat::BC3RgbaUnormSrgb => ImageFormat::BC3RgbaUnormSrgb,
         PixelFormat::BC7RgbaUnorm => ImageFormat::BC7RgbaUnorm,
+        PixelFormat::BC7RgbaUnormSrgb => ImageFormat::BC7RgbaUnormSrgb,
         PixelFormat::Bgra8Unorm => ImageFormat::Bgra8Unorm,
+        PixelFormat::BC6hRgbUfloat => ImageFormat::BC6hRgbUfloat,
     }
 }
 
@@ -82,6 +86,8 @@ fn dxgi_to_texture_format(format: DxgiFormat) -> PixelFormat {
         DxgiFormat::BC1_UNorm_sRGB => PixelFormat::BC1RgbaUnormSrgb,
         DxgiFormat::BC3_UNorm_sRGB => PixelFormat::BC3RgbaUnormSrgb,
         DxgiFormat::BC7_UNorm => PixelFormat::BC7RgbaUnorm,
+        DxgiFormat::BC7_UNorm_sRGB => PixelFormat::BC7RgbaUnormSrgb,
+        DxgiFormat::BC6H_UF16 => PixelFormat::BC6hRgbUfloat,
         _ => panic!("Unsupported DXGI format: {:?}", format),
     }
 }

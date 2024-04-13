@@ -98,7 +98,7 @@ impl CatFileReader {
                         } else {
                             println!("{id}: {:?}", child);
                         }
-                        
+
                         children.push(ArchiveEntry::File(format!("{:#X}.bin", child.offset)));
                     }
                 },
@@ -109,11 +109,18 @@ impl CatFileReader {
                         if val == 1 {
                             children.push(self.unpack_container()?);
                         } else {
-                            println!("{id}: {:#X} [{}, {}, {}, {}]", child.offset,
-                                self.input.read_u32::<LittleEndian>()?,
-                                self.input.read_u32::<LittleEndian>()?,
-                                self.input.read_u32::<LittleEndian>()?,
-                                self.input.read_u32::<LittleEndian>()?);
+                            if let Some(output_dir) = &self.output {
+                                std::fs::create_dir_all(output_dir)?;
+                                self.extract_file(child, &format!("{output_dir}/{:#X}.bin", child.offset))?;
+                            } else {
+                                println!("{id}: {:#X} [{}, {}, {}, {}]", child.offset,
+                                    self.input.read_u32::<LittleEndian>()?,
+                                    self.input.read_u32::<LittleEndian>()?,
+                                    self.input.read_u32::<LittleEndian>()?,
+                                    self.input.read_u32::<LittleEndian>()?);
+                            }
+
+                            children.push(ArchiveEntry::File(format!("{:#X}.bin", child.offset)));
                         }
                     }
                 }
@@ -128,9 +135,10 @@ impl CatFileReader {
             },
             5 => {
                 for (id, child) in header.children.iter().enumerate() {
+                    let offset = self.get_offset();
                     if let Some(output_dir) = &self.output {
                         std::fs::create_dir_all(output_dir)?;
-                        self.extract_file(child, &format!("{output_dir}/child-{id}.bin"))?;
+                        self.extract_file(child, &format!("{output_dir}/{:#X}.bin", offset))?;
                     } else {
                         println!("{id}: {:?}", child);
                     }
@@ -142,19 +150,27 @@ impl CatFileReader {
                 children.push(self.unpack_format_6(&header)?);
             },
             8 => {
-                assert_eq!(header.children.len(), 1);
-
-                children.push(self.unpack_format_8()?);
+                for child in header.children.iter() {
+                    self.input.seek(SeekFrom::Start(child.offset))?;
+                    children.push(self.unpack_format_8()?);
+                }
             },
             _ => {
                 println!("Unknown format {}.", header.format);
                 for (id, child) in header.children.iter().enumerate() {
                     self.input.seek(SeekFrom::Start(child.offset))?;
-                    println!("{id}: {:#X} [{}, {}, {}, {}]", child.offset,
-                        self.input.read_u32::<LittleEndian>()?,
-                        self.input.read_u32::<LittleEndian>()?,
-                        self.input.read_u32::<LittleEndian>()?,
-                        self.input.read_u32::<LittleEndian>()?);
+                    if let Some(output_dir) = &self.output {
+                        std::fs::create_dir_all(output_dir)?;
+                        self.extract_file(child, &format!("{output_dir}/{:#X}.bin", child.offset))?;
+                    } else {
+                        println!("{id}: {:#X} [{}, {}, {}, {}]", child.offset,
+                            self.input.read_u32::<LittleEndian>()?,
+                            self.input.read_u32::<LittleEndian>()?,
+                            self.input.read_u32::<LittleEndian>()?,
+                            self.input.read_u32::<LittleEndian>()?);
+                    }
+
+                    children.push(ArchiveEntry::File(format!("{:#X}.bin", child.offset)));
                 }
             }
         };
